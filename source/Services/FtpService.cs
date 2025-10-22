@@ -69,6 +69,7 @@ public class FtpService
     private const int MaxParallelConnections = 5;
     private const int MaxDepthFastMode = 2; // Root level (0) + 1 level deep (1)
     private const int MaxDepthNormalMode = int.MaxValue; // No limit
+    private const int DecisionThreshold = 3; // For fast mode: decide after finding 3 differing files
 
     // Folders to ignore when scanning
     private readonly string[] _ignoredFolders = new[]
@@ -274,7 +275,7 @@ public class FtpService
                 var existingClient = _sshConnectionPool.FirstOrDefault(c => c.IsConnected);
                 if (existingClient != null)
                 {
-                    Log($"SSH: Reusing existing connection from pool (pool size: {_sshConnectionPool.Count})");
+                    // Log($"SSH: Reusing existing connection from pool (pool size: {_sshConnectionPool.Count})");
                     return existingClient;
                 }
             }
@@ -287,7 +288,7 @@ public class FtpService
             try
             {
                 client.Connect();
-                Log($"SSH: New parallel connection established (pool size: {_sshConnectionPool.Count + 1})");
+                // Log($"SSH: New parallel connection established (pool size: {_sshConnectionPool.Count + 1})");
                 
                 lock (_sshConnectionPool)
                 {
@@ -317,7 +318,7 @@ public class FtpService
     private void ReturnSshConnection(SshClient client)
     {
         // Connection stays in pool for reuse - already released semaphore in GetSshConnectionAsync finally block
-        Log($"SSH: Connection returned to pool for reuse (pool size: {_sshConnectionPool.Count})");
+        // Log($"SSH: Connection returned to pool for reuse (pool size: {_sshConnectionPool.Count})");
     }
 
     /// <summary>
@@ -467,7 +468,8 @@ public class FtpService
         Log($"SFTP: Listing directory: {remotePath}");
         var items = client.ListDirectory(remotePath);
         var itemList = items.ToList();
-        Log($"SFTP: Found {itemList.Count} items in {remotePath} ({itemList.Count(x => !x.Name.StartsWith("."))} excluding . and ..)");
+        var nonDotCount = itemList.Count(x => !x.Name.StartsWith("."));
+        Log($"SFTP: Found {nonDotCount} item{(nonDotCount != 1 ? "s" : "")} in {remotePath}");
 
         // Collect files for parallel hash computation
         var filesNeedingHash = new List<(string key, string fullPath, DateTime lastWriteTime, long size)>();
@@ -505,6 +507,7 @@ public class FtpService
                 else if (item.IsRegularFile)
                 {
                     var key = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
+                    // Store both SFTP timestamp and full path for later SSH lookup if needed
                     filesNeedingHash.Add((key, item.FullName, item.LastWriteTime, item.Attributes.Size));
                 }
             }
@@ -515,17 +518,51 @@ public class FtpService
             }
         }
 
+        // First, get accurate timestamps for all files via SSH (stat command returns Unix timestamp in UTC)
+        var timestampDict = new Dictionary<string, DateTime>();
+        var sshClient = await GetSshConnectionAsync();
+        try
+        {
+            foreach (var f in filesNeedingHash)
+            {
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var command = sshClient.RunCommand($"stat -c %Y \"{f.fullPath}\"");
+                    if (command.ExitStatus == 0 && long.TryParse(command.Result.Trim(), out long unixTimestamp))
+                    {
+                        // Convert Unix timestamp to DateTime UTC
+                        timestampDict[f.key] = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unixTimestamp);
+                    }
+                    else
+                    {
+                        // Fallback to SFTP timestamp if stat fails
+                        timestampDict[f.key] = DateTime.SpecifyKind(f.lastWriteTime, DateTimeKind.Utc);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Warning: Could not get timestamp for {f.key} via SSH: {ex.Message}, using SFTP timestamp");
+                    timestampDict[f.key] = DateTime.SpecifyKind(f.lastWriteTime, DateTimeKind.Utc);
+                }
+            }
+        }
+        finally
+        {
+            ReturnSshConnection(sshClient);
+        }
+
         // Process files in parallel (with max 5 concurrent SSH operations)
-        Log($"SFTP: Computing hashes for {filesNeedingHash.Count} files in parallel (max {MaxParallelConnections} concurrent)");
+        // Log($"SFTP: Computing hashes for {filesNeedingHash.Count} files in parallel (max {MaxParallelConnections} concurrent)");
         var hashTasks = filesNeedingHash.Select(async (f) =>
         {
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Log($"SFTP: Computing hash for file: {f.key} (size: {f.size} bytes)");
+                // Log($"SFTP: Computing hash for file: {f.key} (size: {f.size} bytes)");
                 var hash = await ComputeRemoteFileHashAsync(client, f.fullPath, cancellationToken);
-                files[f.key] = new FileMetadata { Hash = hash, Timestamp = f.lastWriteTime };
-                Log($"SFTP: Hash completed for {f.key}: {hash.Substring(0, Math.Min(8, hash.Length))}...");
+                files[f.key] = new FileMetadata { Hash = hash, Timestamp = timestampDict[f.key] };
+                // Log($"SFTP: Hash completed for {f.key}: {hash.Substring(0, Math.Min(8, hash.Length))}...");
             }
             catch (OperationCanceledException)
             {
@@ -536,7 +573,7 @@ public class FtpService
             {
                 Log($"SFTP: Error computing hash for {f.key}: {hashEx.Message}");
                 // Store with empty hash on error - comparison will treat as different
-                files[f.key] = new FileMetadata { Hash = "", Timestamp = f.lastWriteTime };
+                files[f.key] = new FileMetadata { Hash = "", Timestamp = timestampDict[f.key] };
             }
         });
 
@@ -547,6 +584,8 @@ public class FtpService
     /// <summary>
     /// Compares local and remote file timestamps to determine sync direction
     /// </summary>
+    /// <summary>
+
     /// <summary>
     /// Computes the MD5 hash of a file on the local filesystem
     /// </summary>
@@ -570,11 +609,11 @@ public class FtpService
         // Try to use SSH command first (faster for large files)
         try
         {
-            Log($"Hash: Attempting SSH-based hash computation for {remotePath}");
+            // Log($"Hash: Attempting SSH-based hash computation for {remotePath}");
             var hash = await ComputeRemoteFileHashViaSshAsync(remotePath, cancellationToken);
             if (!string.IsNullOrEmpty(hash))
             {
-                Log($"Hash: SSH hash succeeded");
+                // Log($"Hash: SSH hash succeeded");
                 return hash;
             }
             Log($"Hash: SSH hash returned empty, attempting SFTP fallback");
@@ -590,7 +629,7 @@ public class FtpService
         }
 
         // Fallback: Download file to memory and compute hash
-        Log($"Hash: Computing MD5 hash via SFTP download for {remotePath}");
+        // Log($"Hash: Computing MD5 hash via SFTP download for {remotePath}");
         using (var memoryStream = new System.IO.MemoryStream())
         {
             try
@@ -603,7 +642,7 @@ public class FtpService
                 {
                     byte[] hashBytes = md5.ComputeHash(memoryStream);
                     var hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
-                    Log($"Hash: SFTP hash computed successfully: {hash.Substring(0, Math.Min(8, hash.Length))}...");
+                    // Log($"Hash: SFTP hash computed successfully: {hash.Substring(0, Math.Min(8, hash.Length))}...");
                     return hash;
                 }
             }
@@ -656,7 +695,7 @@ public class FtpService
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     
-                    Log($"SSH: Executing command: {cmd}");
+                    // Log($"SSH: Executing command: {cmd}");
                     var result = client.RunCommand(cmd);
                     
                     if (result.ExitStatus == 0 && !string.IsNullOrWhiteSpace(result.Result))
@@ -670,11 +709,11 @@ public class FtpService
                             var hash = parts[0].ToLowerInvariant();
                             if (hash.Length == 32 && hash.All(c => "0123456789abcdef".Contains(c)))
                             {
-                                Log($"SSH: Hash computed successfully via SSH: {hash}");
+                                // Log($"SSH: Hash computed successfully via SSH: {hash}");
                                 return await Task.FromResult(hash);
                             }
                         }
-                        Log($"SSH: Command succeeded but hash format unexpected: {result.Result.Substring(0, Math.Min(100, result.Result.Length))}");
+                        // Log($"SSH: Command succeeded but hash format unexpected: {result.Result.Substring(0, Math.Min(100, result.Result.Length))}");
                     }
                     else if (result.ExitStatus != 0)
                     {
@@ -762,13 +801,16 @@ public class FtpService
                 else
                 {
                     // Different content - compare timestamps to determine which is newer
-                    if (localFile.Value.Timestamp > remoteMetadata.Timestamp)
+                    var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
+                    
+                    if (timeDiff > TimeSpan.Zero)
                     {
+                        // Local is newer
                         newerLocal++;
                         newerLocalFiles.Add(localFile.Key);
                         if (string.IsNullOrEmpty(localExample))
                         {
-                            localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}, FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm}";
+                            localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss}, FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss}";
                         }
                         
                         // Fast mode: if we found 3 files newer locally, decide to sync to FTP
@@ -780,13 +822,14 @@ public class FtpService
                             break;
                         }
                     }
-                    else if (remoteMetadata.Timestamp > localFile.Value.Timestamp)
+                    else if (timeDiff < TimeSpan.Zero)
                     {
+                        // Remote is newer
                         newerRemote++;
                         newerRemoteFiles.Add(localFile.Key);
                         if (string.IsNullOrEmpty(remoteExample))
                         {
-                            remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm}, Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                            remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss}, Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss}";
                         }
                         
                         // Fast mode: if we found 3 files newer remotely, decide to sync to local
@@ -798,7 +841,16 @@ public class FtpService
                             break;
                         }
                     }
-                    // If timestamps are equal but hashes differ, treat as conflict - don't sync
+                    else
+                    {
+                        // Exact same timestamp but different content - flag as conflict
+                        newerLocal++;
+                        newerLocalFiles.Add(localFile.Key);
+                        if (string.IsNullOrEmpty(localExample))
+                        {
+                            localExample = $"CONFLICT: {localFile.Key} (same timestamp, different content)";
+                        }
+                    }
                 }
             }
             else
