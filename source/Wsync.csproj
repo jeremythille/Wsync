@@ -15,7 +15,7 @@
 
   <Target Name="CopyToProgram" AfterTargets="Build">
     <ItemGroup>
-      <FilesToCopy Include="$(TargetDir)**\*" />
+      <FilesToCopy Include="$(TargetDir)**\*" Exclude="$(TargetDir)config.json5" />
     </ItemGroup>
     <Copy SourceFiles="@(FilesToCopy)" DestinationFiles="@(FilesToCopy->'../program/%(Filename)%(Extension)')" />
   </Target>

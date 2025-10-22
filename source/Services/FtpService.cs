@@ -116,12 +116,13 @@ public class FtpService
     /// <summary>
     /// Analyzes files on both local and FTP sides and returns a sync recommendation
     /// </summary>
-    public async Task<SyncRecommendation> GetSyncRecommendationAsync()
+    public async Task<SyncRecommendation> GetSyncRecommendationAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             // Get local files
             _statusCallback?.Invoke("Scanning local files...");
+            cancellationToken.ThrowIfCancellationRequested();
             
             // Check if local path exists before trying to scan
             if (!Directory.Exists(_localPath))
@@ -151,16 +152,18 @@ public class FtpService
             }
 
             _statusCallback?.Invoke($"Found {localFiles.Count} local files. Connecting to FTP...");
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Connect to FTP and get remote files
             try
             {
-                var remoteFiles = await GetRemoteFileMetadataAsync();
+                var remoteFiles = await GetRemoteFileMetadataAsync(cancellationToken);
                 
                 _statusCallback?.Invoke($"Found {remoteFiles.Count} remote files. Comparing...");
+                cancellationToken.ThrowIfCancellationRequested();
 
                 // Compare using hybrid checksum+timestamp approach
-                var result = CompareFileMetadata(localFiles, remoteFiles);
+                var result = CompareFileMetadata(localFiles, remoteFiles, cancellationToken);
                 LastComparisonResult = result;
                 _statusCallback?.Invoke("Analysis complete");
                 return result.Recommendation;
@@ -183,6 +186,11 @@ public class FtpService
                 // Clean up SSH connection if it exists
                 CleanupSshConnection();
             }
+        }
+        catch (OperationCanceledException)
+        {
+            Log("Sync recommendation analysis was canceled");
+            throw;
         }
         catch (Exception ex)
         {
@@ -395,7 +403,7 @@ public class FtpService
     /// <summary>
     /// Gets remote file metadata (hash and timestamp) recursively via FTP
     /// </summary>
-    private async Task<Dictionary<string, FileMetadata>> GetRemoteFileMetadataAsync()
+    private async Task<Dictionary<string, FileMetadata>> GetRemoteFileMetadataAsync(CancellationToken cancellationToken = default)
     {
         var files = new Dictionary<string, FileMetadata>();
 
@@ -422,7 +430,7 @@ public class FtpService
             try
             {
                 int maxDepth = _fastMode ? MaxDepthFastMode : MaxDepthNormalMode;
-                await GetRemoteFilesRecursiveAsync(client, _remotePath, "", files, currentDepth: 0, maxDepth: maxDepth);
+                await GetRemoteFilesRecursiveAsync(client, _remotePath, "", files, currentDepth: 0, maxDepth: maxDepth, cancellationToken: cancellationToken);
                 Log($"SFTP: File enumeration completed. Found {files.Count} files total");
             }
             catch (Exception enumEx)
@@ -452,8 +460,10 @@ public class FtpService
     /// Recursively gets files with metadata from a remote SFTP directory (for hybrid comparison)
     /// Uses parallel SSH connections for faster hash computation
     /// </summary>
-    private async Task GetRemoteFilesRecursiveAsync(SftpClient client, string remotePath, string relativePath, Dictionary<string, FileMetadata> files, int currentDepth = 0, int maxDepth = int.MaxValue)
+    private async Task GetRemoteFilesRecursiveAsync(SftpClient client, string remotePath, string relativePath, Dictionary<string, FileMetadata> files, int currentDepth = 0, int maxDepth = int.MaxValue, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        
         Log($"SFTP: Listing directory: {remotePath}");
         var items = client.ListDirectory(remotePath);
         var itemList = items.ToList();
@@ -485,7 +495,7 @@ public class FtpService
                         Log($"SFTP: Recursing into directory: {item.FullName}");
                         // Recurse into subdirectories
                         var subPath = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
-                        await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth);
+                        await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth, cancellationToken);
                     }
                     else
                     {
@@ -511,10 +521,16 @@ public class FtpService
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 Log($"SFTP: Computing hash for file: {f.key} (size: {f.size} bytes)");
-                var hash = await ComputeRemoteFileHashAsync(client, f.fullPath);
+                var hash = await ComputeRemoteFileHashAsync(client, f.fullPath, cancellationToken);
                 files[f.key] = new FileMetadata { Hash = hash, Timestamp = f.lastWriteTime };
                 Log($"SFTP: Hash completed for {f.key}: {hash.Substring(0, Math.Min(8, hash.Length))}...");
+            }
+            catch (OperationCanceledException)
+            {
+                Log($"SFTP: Hash computation for {f.key} was canceled");
+                throw;
             }
             catch (Exception hashEx)
             {
@@ -547,19 +563,26 @@ public class FtpService
     /// <summary>
     /// Computes the MD5 hash of a file on the remote SFTP server
     /// </summary>
-    private async Task<string> ComputeRemoteFileHashAsync(SftpClient client, string remotePath)
+    private async Task<string> ComputeRemoteFileHashAsync(SftpClient client, string remotePath, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        
         // Try to use SSH command first (faster for large files)
         try
         {
             Log($"Hash: Attempting SSH-based hash computation for {remotePath}");
-            var hash = await ComputeRemoteFileHashViaSshAsync(remotePath);
+            var hash = await ComputeRemoteFileHashViaSshAsync(remotePath, cancellationToken);
             if (!string.IsNullOrEmpty(hash))
             {
                 Log($"Hash: SSH hash succeeded");
                 return hash;
             }
             Log($"Hash: SSH hash returned empty, attempting SFTP fallback");
+        }
+        catch (OperationCanceledException)
+        {
+            Log($"Hash: SSH hash computation was canceled for {remotePath}");
+            throw;
         }
         catch (Exception ex)
         {
@@ -572,6 +595,7 @@ public class FtpService
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 client.DownloadFile(remotePath, memoryStream);
                 memoryStream.Position = 0;
                 
@@ -582,6 +606,11 @@ public class FtpService
                     Log($"Hash: SFTP hash computed successfully: {hash.Substring(0, Math.Min(8, hash.Length))}...");
                     return hash;
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                Log($"Hash: SFTP hash computation was canceled for {remotePath}");
+                throw;
             }
             catch (Exception ex)
             {
@@ -595,14 +624,18 @@ public class FtpService
     /// Computes MD5 hash via remote SSH command (faster for large files)
     /// Uses command semaphore to limit concurrent SSH operations to 5
     /// </summary>
-    private async Task<string> ComputeRemoteFileHashViaSshAsync(string remotePath)
+    private async Task<string> ComputeRemoteFileHashViaSshAsync(string remotePath, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        
         // Acquire semaphore to limit concurrent SSH commands
-        await _sshCommandSemaphore.WaitAsync();
+        await _sshCommandSemaphore.WaitAsync(cancellationToken);
         
         SshClient? client = null;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            
             // Get a connection from the pool (or create new one, with max 5 parallel)
             client = await GetSshConnectionAsync();
 
@@ -621,6 +654,8 @@ public class FtpService
             {
                 try
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    
                     Log($"SSH: Executing command: {cmd}");
                     var result = client.RunCommand(cmd);
                     
@@ -645,6 +680,11 @@ public class FtpService
                     {
                         Log($"SSH: Command '{cmd}' failed with exit code {result.ExitStatus}. Error: {result.Error}");
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    Log($"SSH: Command execution was canceled");
+                    throw;
                 }
                 catch (Exception cmdEx)
                 {
@@ -687,8 +727,10 @@ public class FtpService
     /// - Same checksum = files in sync (identical content)
     /// - Different checksum = compare timestamps to determine newer version
     /// </summary>
-    private ComparisonResult CompareFileMetadata(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles)
+    private ComparisonResult CompareFileMetadata(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken = default)
     {
+        const int DecisionThreshold = 3; // If we find 3 files newer on one side, decide direction immediately
+        
         var newerLocal = 0;
         var newerRemote = 0;
         var localOnly = 0;
@@ -700,10 +742,15 @@ public class FtpService
         var newerRemoteFiles = new List<string>();
         var localOnlyFiles = new List<string>();
         var remoteOnlyFiles = new List<string>();
+        
+        bool decidedEarly = false;
+        SyncRecommendation? earlyDecision = null;
 
         // Check all files that exist locally
         foreach (var localFile in localFiles)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            
             if (remoteFiles.TryGetValue(localFile.Key, out var remoteMetadata))
             {
                 // File exists on both sides
@@ -723,6 +770,15 @@ public class FtpService
                         {
                             localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}, FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm}";
                         }
+                        
+                        // Fast mode: if we found 3 files newer locally, decide to sync to FTP
+                        if (_fastMode && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0)
+                        {
+                            Log($"\n[FAST MODE] Found {DecisionThreshold} files newer locally - deciding to sync to FTP");
+                            decidedEarly = true;
+                            earlyDecision = SyncRecommendation.SyncToFtp;
+                            break;
+                        }
                     }
                     else if (remoteMetadata.Timestamp > localFile.Value.Timestamp)
                     {
@@ -731,6 +787,15 @@ public class FtpService
                         if (string.IsNullOrEmpty(remoteExample))
                         {
                             remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm}, Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                        }
+                        
+                        // Fast mode: if we found 3 files newer remotely, decide to sync to local
+                        if (_fastMode && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0)
+                        {
+                            Log($"\n[FAST MODE] Found {DecisionThreshold} files newer on FTP - deciding to sync to local");
+                            decidedEarly = true;
+                            earlyDecision = SyncRecommendation.SyncToLocal;
+                            break;
                         }
                     }
                     // If timestamps are equal but hashes differ, treat as conflict - don't sync
@@ -748,31 +813,44 @@ public class FtpService
             }
         }
 
-        // Check for files that exist only on remote
-        foreach (var remoteFile in remoteFiles)
+        // Check for files that exist only on remote (only if we haven't already decided)
+        if (!decidedEarly)
         {
-            if (!localFiles.ContainsKey(remoteFile.Key))
+            foreach (var remoteFile in remoteFiles)
             {
-                remoteOnly++;
-                remoteOnlyFiles.Add(remoteFile.Key);
-                if (string.IsNullOrEmpty(remoteExample))
+                cancellationToken.ThrowIfCancellationRequested();
+                
+                if (!localFiles.ContainsKey(remoteFile.Key))
                 {
-                    remoteExample = $"FTP only: {remoteFile.Key} {remoteFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                    remoteOnly++;
+                    remoteOnlyFiles.Add(remoteFile.Key);
+                    if (string.IsNullOrEmpty(remoteExample))
+                    {
+                        remoteExample = $"FTP only: {remoteFile.Key} {remoteFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                    }
                 }
             }
         }
 
         // Log detailed file lists
         Log("\n=== FILES NEWER LOCALLY ===");
-        foreach (var file in newerLocalFiles)
+        foreach (var file in newerLocalFiles.Take(20))
         {
             Log($"  - {file}");
         }
+        if (newerLocalFiles.Count > 20)
+        {
+            Log($"  ... and {newerLocalFiles.Count - 20} more");
+        }
         
         Log("\n=== FILES NEWER ON FTP ===");
-        foreach (var file in newerRemoteFiles)
+        foreach (var file in newerRemoteFiles.Take(20))
         {
             Log($"  - {file}");
+        }
+        if (newerRemoteFiles.Count > 20)
+        {
+            Log($"  ... and {newerRemoteFiles.Count - 20} more");
         }
         
         Log("\n=== FILES ONLY PRESENT LOCALLY ===");
@@ -803,7 +881,13 @@ public class FtpService
 
         // Decision logic
         SyncRecommendation recommendation;
-        if (totalLocalNeedsSync == 0 && totalRemoteNeedsSync == 0)
+        if (decidedEarly && earlyDecision.HasValue)
+        {
+            // Use early decision from fast mode
+            recommendation = earlyDecision.Value;
+            Log($"\n[FAST MODE] Using early decision: {recommendation}");
+        }
+        else if (totalLocalNeedsSync == 0 && totalRemoteNeedsSync == 0)
             recommendation = SyncRecommendation.InSync;
         else if (totalLocalNeedsSync > 0 && totalRemoteNeedsSync == 0)
             recommendation = SyncRecommendation.SyncToFtp;

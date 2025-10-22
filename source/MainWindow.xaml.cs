@@ -24,6 +24,8 @@ public partial class MainWindow : Window
     private int _spinnerIndex = 0;
     private readonly string[] _spinnerFrames = { "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     private DateTime _lastCheckTime = DateTime.MinValue;
+    private CancellationTokenSource? _analysisCancellationToken;
+    private bool _pendingSyncToFtp = false;  // Track which sync action is pending confirmation
 
     public MainWindow()
     {
@@ -100,14 +102,35 @@ public partial class MainWindow : Window
 
     private async void ProjectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Update the path displays for the selected project
+        UpdatePathDisplays();
+        
         // Automatically analyze when project selection changes
         await AnalyzeSyncStatusAsync();
+    }
+
+    private void UpdatePathDisplays()
+    {
+        if (ProjectComboBox.SelectedIndex < 0 || ProjectComboBox.SelectedIndex >= _configService.GetProjects().Count)
+        {
+            LocalPathText.Text = "";
+            RemotePathText.Text = "";
+            return;
+        }
+
+        var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
+        LocalPathText.Text = selectedProject.LocalPath;
+        RemotePathText.Text = selectedProject.FtpRemotePath;
     }
 
     private async Task AnalyzeSyncStatusAsync()
     {
         if (ProjectComboBox.SelectedIndex < 0 || ProjectComboBox.SelectedIndex >= _configService.GetProjects().Count)
             return;
+
+        // Cancel any previous analysis
+        _analysisCancellationToken?.Cancel();
+        _analysisCancellationToken = new CancellationTokenSource();
 
         var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
         var ftpConfig = _configService.GetConfig().Ftp;
@@ -122,18 +145,21 @@ public partial class MainWindow : Window
             _spinnerIndex = 0;
             _spinnerTimer?.Start();
             LoadingSpinner.Visibility = Visibility.Visible;
+            AbortAnalysisButton.Visibility = Visibility.Visible;
             UpdateStatus("Analyzing files...", "", "");
             
             SyncLeftButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
             SyncRightButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
             SyncLeftButton.IsEnabled = false;
             SyncRightButton.IsEnabled = false;
+            ProjectComboBox.IsEnabled = false;
 
             // Run analysis on thread pool to avoid blocking UI
-            var recommendation = await Task.Run(async () => await _ftpService.GetSyncRecommendationAsync());
+            var recommendation = await Task.Run(async () => await _ftpService.GetSyncRecommendationAsync(_analysisCancellationToken.Token));
 
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
+            AbortAnalysisButton.Visibility = Visibility.Collapsed;
             _lastCheckTime = DateTime.Now;
 
             // Show the checked timestamp immediately after analysis completes
@@ -145,14 +171,30 @@ public partial class MainWindow : Window
 
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
+        }
+        catch (OperationCanceledException)
+        {
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Analysis was canceled");
+            _spinnerTimer?.Stop();
+            LoadingSpinner.Visibility = Visibility.Collapsed;
+            AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            UpdateStatus("Analysis canceled", "", "");
+            SyncLeftButton.IsEnabled = true;
+            SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Error analyzing sync status: {ex.Message}");
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
+            AbortAnalysisButton.Visibility = Visibility.Collapsed;
             UpdateStatus($"Error: {ex.Message}", "", "");
             ResetButtonColors();
+            SyncLeftButton.IsEnabled = true;
+            SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
         }
     }
 
@@ -377,33 +419,105 @@ public partial class MainWindow : Window
 
     private async void SyncLeftButton_Click(object sender, RoutedEventArgs e)
     {
-        var result = MessageBox.Show("Download files from FTP to Desktop?", "Confirm Sync", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result != MessageBoxResult.Yes) return;
-
-        await PerformSyncAsync(isSyncToFtp: false);
+        _pendingSyncToFtp = false;
+        ConfirmationMessage.Text = "Download files from FTP to Desktop?";
+        ConfirmationOverlay.Visibility = Visibility.Visible;
     }
 
-    private async void RefreshButton_Click(object sender, RoutedEventArgs e)
+    private void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
         // Reload config and projects
         _configService.LoadConfig();
         LoadProjects();
         
         // Then analyze the currently selected project
-        await AnalyzeSyncStatusAsync();
+        _ = AnalyzeSyncStatusAsync();
+    }
+
+    private void AbortAnalysisButton_Click(object sender, RoutedEventArgs e)
+    {
+        System.Diagnostics.Debug.WriteLine("[MainWindow] Abort button clicked");
+        _analysisCancellationToken?.Cancel();
     }
 
     private async void SyncRightButton_Click(object sender, RoutedEventArgs e)
     {
-        var result = MessageBox.Show("Upload files from Desktop to FTP?", "Confirm Sync", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result != MessageBoxResult.Yes) return;
+        _pendingSyncToFtp = true;
+        ConfirmationMessage.Text = "Upload files from Desktop to FTP?";
+        ConfirmationOverlay.Visibility = Visibility.Visible;
+    }
 
-        await PerformSyncAsync(isSyncToFtp: true);
+    private async void ConfirmYesButton_Click(object sender, RoutedEventArgs e)
+    {
+        ConfirmationOverlay.Visibility = Visibility.Collapsed;
+        await PerformSyncAsync(isSyncToFtp: _pendingSyncToFtp);
+    }
+
+    private void ConfirmNoButton_Click(object sender, RoutedEventArgs e)
+    {
+        ConfirmationOverlay.Visibility = Visibility.Collapsed;
     }
 
     private async Task PerformSyncAsync(bool isSyncToFtp)
     {
-        if (_ftpService == null) return;
+        // Initialize FtpService if not already done
+        if (_ftpService == null)
+        {
+            if (ProjectComboBox.SelectedIndex < 0 || ProjectComboBox.SelectedIndex >= _configService.GetProjects().Count)
+            {
+                UpdateStatus("Please select a project first", "", "");
+                return;
+            }
+
+            var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
+            var ftpConfig = _configService.GetConfig().Ftp;
+            var fastMode = FastModeCheckBox.IsChecked ?? false;
+
+            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, fastMode);
+            _ftpService.SetStatusCallback(UpdateAnalysisStatus);
+            
+            // Need to analyze first to populate LastComparisonResult
+            try
+            {
+                _spinnerIndex = 0;
+                _spinnerTimer?.Start();
+                LoadingSpinner.Visibility = Visibility.Visible;
+                UpdateStatus("Analyzing files...", "", "");
+                
+                SyncLeftButton.IsEnabled = false;
+                SyncRightButton.IsEnabled = false;
+                ProjectComboBox.IsEnabled = false;
+                
+                _analysisCancellationToken?.Cancel();
+                _analysisCancellationToken = new CancellationTokenSource();
+                
+                var recommendation = await _ftpService.GetSyncRecommendationAsync(_analysisCancellationToken.Token);
+                
+                // Don't show results, just proceed to sync
+                _spinnerTimer?.Stop();
+                LoadingSpinner.Visibility = Visibility.Collapsed;
+            }
+            catch (OperationCanceledException)
+            {
+                _spinnerTimer?.Stop();
+                LoadingSpinner.Visibility = Visibility.Collapsed;
+                UpdateStatus("Analysis canceled", "", "");
+                SyncLeftButton.IsEnabled = true;
+                SyncRightButton.IsEnabled = true;
+                ProjectComboBox.IsEnabled = true;
+                return;
+            }
+            catch (Exception ex)
+            {
+                _spinnerTimer?.Stop();
+                LoadingSpinner.Visibility = Visibility.Collapsed;
+                UpdateStatus($"Analysis failed: {ex.Message}", "", "");
+                SyncLeftButton.IsEnabled = true;
+                SyncRightButton.IsEnabled = true;
+                ProjectComboBox.IsEnabled = true;
+                return;
+            }
+        }
 
         try
         {
@@ -429,8 +543,11 @@ public partial class MainWindow : Window
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
 
-            // Re-analyze after sync completes
-            await AnalyzeSyncStatusAsync();
+            // Show completion message
+            UpdateStatus($"Sync completed successfully!", "", "");
+            SyncLeftButton.IsEnabled = true;
+            SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
         }
         catch (Exception ex)
         {

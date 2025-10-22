@@ -7,6 +7,9 @@ source/obj/
 program/*.log
 Wsync.log
 
+# Test directories
+Wsync_test/
+
 # Configuration (user-managed - will be modified locally)
 program/config.json5
 config.json5
