@@ -1,0 +1,28 @@
+# Build results
+source/bin/
+source/obj/
+
+# Logs
+*.log
+program/*.log
+Wsync.log
+
+# Configuration (user-managed - will be modified locally)
+program/config.json5
+config.json5
+
+# Visual Studio
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+
+# User-specific files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo

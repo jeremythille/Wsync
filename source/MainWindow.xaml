@@ -1,0 +1,160 @@
+﻿<Window x:Class="Wsync.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Wsync"
+        mc:Ignorable="d"
+        Title="Wsync" Height="600" Width="300"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F5F5">
+    <Grid VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Info Hint -->
+        <TextBlock Grid.Row="0"
+                   Text="Edit the project list in program/config.json5" 
+                   FontSize="9" 
+                   Foreground="#999" 
+                   Margin="15,15,15,8"
+                   TextWrapping="Wrap"/>
+        
+        <!-- Project Selector with Refresh Button -->
+        <Grid Grid.Row="1" Margin="15,0,15,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="50"/>
+            </Grid.ColumnDefinitions>
+            
+            <ComboBox Grid.Column="0"
+                      x:Name="ProjectComboBox" 
+                      Height="48" 
+                      Padding="12"
+                      FontSize="14"
+                      FontWeight="SemiBold"
+                      Background="White"
+                      BorderThickness="2"
+                      BorderBrush="#0078D4"
+                      Margin="0,0,8,0"/>
+            
+            <Button Grid.Column="1"
+                    x:Name="RefreshButton"
+                    Width="42"
+                    Height="48"
+                    ToolTip="Refresh file comparison"
+                    Background="White"
+                    Foreground="#0078D4"
+                    FontSize="20"
+                    Padding="0"
+                    BorderThickness="2"
+                    BorderBrush="#0078D4"
+                    Cursor="Hand"
+                    Click="RefreshButton_Click">
+                ↻
+            </Button>
+        </Grid>
+
+        <!-- Fast Mode Checkbox -->
+        <Grid Grid.Row="2" Margin="15,0,15,8">
+            <CheckBox x:Name="FastModeCheckBox"
+                      VerticalAlignment="Center"
+                      FontSize="11"
+                      Foreground="#333"
+                      IsChecked="False">
+                <CheckBox.ToolTip>
+                    <ToolTip>
+                        <TextBlock TextWrapping="Wrap" MaxWidth="300" Text="Fast Mode: Only analyzes root-level files and one level deep. Useful for quick analysis of large projects. Disable for complete deep analysis."/>
+                    </ToolTip>
+                </CheckBox.ToolTip>
+                Fast Mode
+            </CheckBox>
+        </Grid>
+
+        <!-- Sync Controls -->
+        <Grid Grid.Row="3" Margin="15,8,15,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Desktop Icon -->
+            <StackPanel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="💻" FontSize="48" TextAlignment="Center"/>
+                <TextBlock Text="Desktop" FontSize="10" TextAlignment="Center" Margin="0,4,0,0" Foreground="#666"/>
+            </StackPanel>
+
+            <!-- Sync Buttons -->
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Center" Orientation="Vertical" Margin="12,0">
+                <Button x:Name="SyncRightButton" 
+                        Width="36" Height="36" 
+                        ToolTip="Sync from Desktop to FTP"
+                        Background="White" 
+                        Foreground="#333"
+                        FontSize="18"
+                        Padding="0"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        Click="SyncRightButton_Click"
+                        Margin="0,0,0,8">
+                    →
+                </Button>
+                <Button x:Name="SyncLeftButton" 
+                        Width="36" Height="36" 
+                        ToolTip="Sync from FTP to Desktop"
+                        Background="White" 
+                        Foreground="#333"
+                        FontSize="18"
+                        Padding="0"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        Click="SyncLeftButton_Click">
+                    ←
+                </Button>
+            </StackPanel>
+
+            <!-- Cloud Icon -->
+            <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="☁" FontSize="48" TextAlignment="Center"/>
+                <TextBlock Text="FTP Server" FontSize="10" TextAlignment="Center" Margin="0,4,0,0" Foreground="#666"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Status Panel - takes remaining space -->
+        <Grid Grid.Row="4" Background="White" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Margin="0">
+
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Loading Spinner -->
+            <Grid Grid.Row="0" x:Name="LoadingSpinner" Height="20" Margin="27,15,27,8" HorizontalAlignment="Left" Visibility="Collapsed">
+                <TextBlock x:Name="SpinnerText" Text="⠙" FontSize="18" Foreground="#0078D4"/>
+            </Grid>
+
+            <!-- Single Content TextBox - shows logs, then recommendations -->
+            <TextBox Grid.Row="1"
+                     x:Name="RecommendationText" 
+                     Text="Select a project and click Refresh to compare files." 
+                     FontSize="11" 
+                     Foreground="#333"
+                     TextWrapping="Wrap"
+                     FontWeight="SemiBold"
+                     Margin="27,0,27,15"
+                     IsReadOnly="True"
+                     Background="White"
+                     BorderThickness="0"
+                     Padding="0"
+                     FontFamily="Segoe UI"
+                     VerticalScrollBarVisibility="Auto"/>
+        </Grid>
+    </Grid>
+</Window>
