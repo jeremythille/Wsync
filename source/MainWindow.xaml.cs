@@ -75,15 +75,8 @@ public partial class MainWindow : Window
                 ProjectComboBox.Items.Add(project.Name);
             }
             
-            // Restore last selected project from config by name, or select first one
-            if (!string.IsNullOrEmpty(config.LastProject) && ProjectComboBox.Items.Contains(config.LastProject))
-            {
-                ProjectComboBox.SelectedItem = config.LastProject;
-            }
-            else
-            {
-                ProjectComboBox.SelectedIndex = 0;
-            }
+            // Select first project by default
+            ProjectComboBox.SelectedIndex = 0;
             
             ProjectComboBox.IsEnabled = true;
             ProjectComboBox.SelectionChanged += ProjectComboBox_SelectionChanged;
@@ -91,8 +84,8 @@ public partial class MainWindow : Window
             UpdateStatus("Ready. Select a project to analyze.", "", "");
         }
         
-        // Load the analysis mode from config
-        LoadAnalysisMode(config.Mode);
+        // Load the analysis mode from state
+        LoadAnalysisMode(AnalysisMode.Full);
     }
     
     private void LoadAnalysisMode(AnalysisMode mode)
@@ -135,13 +128,9 @@ public partial class MainWindow : Window
         var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
         var config = _configService.GetConfig();
         var ftpConfig = config.Ftp;
-        
-        // Save the current project and mode to config
-        config.LastProject = selectedProject.Name;
-        config.Mode = (AnalysisMode)ModeComboBox.SelectedIndex;
-        _configService.SaveConfig(config);
+        var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
 
-        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, config.Mode);
+        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, mode);
         _ftpService.SetStatusCallback(UpdateAnalysisStatus);
 
         try
@@ -553,8 +542,9 @@ public partial class MainWindow : Window
             var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
             var config = _configService.GetConfig();
             var ftpConfig = config.Ftp;
+            var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
 
-            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, config.Mode);
+            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, mode);
             _ftpService.SetStatusCallback(UpdateAnalysisStatus);
             
             // Need to analyze first to populate LastComparisonResult
@@ -691,14 +681,9 @@ public partial class MainWindow : Window
 
     private void ModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Save the selected mode to config
+        // Automatically analyze when mode changes
         if (ModeComboBox.SelectedIndex >= 0)
         {
-            var config = _configService.GetConfig();
-            config.Mode = (AnalysisMode)ModeComboBox.SelectedIndex;
-            _configService.SaveConfig(config);
-            
-            // Automatically analyze when mode changes
             _ = AnalyzeSyncStatusAsync();
         }
     }

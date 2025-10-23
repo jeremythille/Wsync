@@ -53,32 +53,4 @@ public class AppConfig
     
     [Newtonsoft.Json.JsonProperty("excludedFolders")]
     public List<string> ExcludedFolders { get; set; } = new();
-    
-    [Newtonsoft.Json.JsonProperty("mode")]
-    public string ModeString { 
-        get => _mode.ToString().ToLowerInvariant();
-        set => _mode = ParseMode(value);
-    }
-    
-    [Newtonsoft.Json.JsonIgnore]
-    public AnalysisMode Mode 
-    { 
-        get => _mode;
-        set => _mode = value;
-    }
-    
-    private AnalysisMode _mode = AnalysisMode.Full;
-    
-    private static AnalysisMode ParseMode(string modeString)
-    {
-        return modeString?.ToLowerInvariant() switch
-        {
-            "quick" => AnalysisMode.Quick,
-            "git" => AnalysisMode.Git,
-            _ => AnalysisMode.Full
-        };
-    }
-    
-    [Newtonsoft.Json.JsonProperty("lastProject")]
-    public string LastProject { get; set; } = string.Empty;
 }
