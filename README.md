@@ -12,9 +12,13 @@ A tiny, minimal Windows desktop application for synchronizing files between your
 - 🎯 Multiple analysis modes:
   - **Full**: Analyzes all files recursively
   - **Quick**: Analyzes only root + 1 level deep (fast decision)
-  - **Git**: Compares latest git commits (timezone-aware)
+  - **Git**: Compares latest git commits
 - ⚡ Fast timestamp-based comparison (no hashing)
 - 🔒 Credentials stored securely (local config file)
+
+<div align="center">
+  <img src="./screenshot.png" alt="Wsync Screenshot" />
+</div>
 
 ## How to Run
 
@@ -25,7 +29,12 @@ A tiny, minimal Windows desktop application for synchronizing files between your
 2. **Launch the application:**
    - Double-click `program/Wsync.exe`
 
-That's it! Select a project and the app automatically analyzes sync status.
+3. **Sync your files:**
+   - Select a project from the dropdown
+   - Choose your sync direction (Full/Quick/Git mode)
+   - Click the corresponding arrow button to sync in the desired direction
+
+That's it! The app will analyze sync status and sync your files.
 
 ## Configuration
 
