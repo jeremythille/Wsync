@@ -164,7 +164,7 @@
 
             <!-- Desktop Icon -->
             <StackPanel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
-                <TextBlock Text="💻" FontSize="48" TextAlignment="Center"/>
+                <TextBlock x:Name="DesktopIcon" Text="💻" FontSize="48" TextAlignment="Center" Foreground="#333"/>
                 <TextBlock Text="Desktop" FontSize="10" TextAlignment="Center" Margin="0,4,0,0" Foreground="#666"/>
                 <TextBlock x:Name="LocalPathText" 
                            Text="" 
@@ -207,7 +207,7 @@
 
             <!-- Cloud Icon -->
             <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Center">
-                <TextBlock Text="☁" FontSize="48" TextAlignment="Center"/>
+                <TextBlock x:Name="CloudIcon" Text="☁" FontSize="48" TextAlignment="Center" Foreground="#333"/>
                 <TextBlock Text="FTP Server" FontSize="10" TextAlignment="Center" Margin="0,4,0,0" Foreground="#666"/>
                 <TextBlock x:Name="RemotePathText" 
                            Text="" 

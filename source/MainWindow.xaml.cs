@@ -155,6 +155,9 @@ public partial class MainWindow : Window
             
             _analysisStartTime = DateTime.Now;
             
+            // Reset icon colors to neutral at start of analysis
+            ResetIconColors();
+            
             SyncLeftButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
             SyncRightButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
             SyncLeftButton.IsEnabled = false;
@@ -246,6 +249,9 @@ public partial class MainWindow : Window
         // Calculate elapsed time
         var elapsedTime = _lastCheckTime - _analysisStartTime;
         var elapsedStr = $"{elapsedTime.Minutes}'{elapsedTime.Seconds:D2}";
+        
+        // Update icon colors based on recommendation
+        UpdateIconColors(recommendation);
         
         // If there's an error, show it prominently
         if (!string.IsNullOrEmpty(result?.Error))
@@ -632,6 +638,55 @@ public partial class MainWindow : Window
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
         }
+    }
+
+    private void UpdateIconColors(SyncRecommendation recommendation)
+    {
+        // Reset to neutral gray
+        var neutralColor = System.Windows.Media.Color.FromRgb(51, 51, 51);  // #333
+        var greenColor = System.Windows.Media.Color.FromRgb(34, 139, 34);   // Forest green
+        var redColor = System.Windows.Media.Color.FromRgb(220, 20, 60);     // Crimson red
+        
+        var neutralBrush = new System.Windows.Media.SolidColorBrush(neutralColor);
+        var greenBrush = new System.Windows.Media.SolidColorBrush(greenColor);
+        var redBrush = new System.Windows.Media.SolidColorBrush(redColor);
+        
+        switch (recommendation)
+        {
+            case SyncRecommendation.SyncToLocal:
+                // Remote (FTP) is newer, so cloud is green and desktop is red
+                DesktopIcon.Foreground = redBrush;
+                CloudIcon.Foreground = greenBrush;
+                break;
+            
+            case SyncRecommendation.SyncToFtp:
+                // Local (Desktop) is newer, so desktop is green and cloud is red
+                DesktopIcon.Foreground = greenBrush;
+                CloudIcon.Foreground = redBrush;
+                break;
+            
+            case SyncRecommendation.InSync:
+                // Both are in sync - both green
+                DesktopIcon.Foreground = greenBrush;
+                CloudIcon.Foreground = greenBrush;
+                break;
+            
+            case SyncRecommendation.BothNewer:
+            case SyncRecommendation.Unknown:
+            default:
+                // Reset to neutral for conflicts or unknown states
+                DesktopIcon.Foreground = neutralBrush;
+                CloudIcon.Foreground = neutralBrush;
+                break;
+        }
+    }
+
+    private void ResetIconColors()
+    {
+        var neutralColor = System.Windows.Media.Color.FromRgb(51, 51, 51);  // #333
+        var neutralBrush = new System.Windows.Media.SolidColorBrush(neutralColor);
+        DesktopIcon.Foreground = neutralBrush;
+        CloudIcon.Foreground = neutralBrush;
     }
 
     private void ModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

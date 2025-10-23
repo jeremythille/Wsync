@@ -1,104 +1,130 @@
 # Wsync - File Sync Utility
 
-A simple Windows desktop application for synchronizing files between your local desktop and an FTP server.
+A tiny, minimal Windows desktop application for synchronizing files between your local desktop and an FTP/SFTP server.
 
 ## Features
 
-- 🖥️ Clean, minimal UI (300x600px)
-- 📋 Project-based configuration
-- 🔄 Bi-directional file sync (Desktop ↔ FTP)
-- 📝 JSON configuration file
-- ⚡ Quick, lightweight
+- 🖥️ Clean, minimal UI - quickly see sync status at a glance
+- 📋 Easy per-project configuration - manage multiple projects
+- 🚀 Portable - no installation needed, can run from a USB key
+- 🔄 Bi-directional file sync (Desktop ↔ FTP/SFTP)
+- 🎯 Multiple analysis modes:
+  - **Full**: Analyzes all files recursively
+  - **Quick**: Analyzes only root + 1 level deep (fast decision)
+  - **Git**: Compares latest git commits (timezone-aware)
+- ⚡ Fast timestamp-based comparison (no hashing)
+- 🔒 Credentials stored securely (local config file)
 
-## Setup
+## How to Run
 
-### Prerequisites
-- .NET 8 Runtime or SDK
+1. **Create a configuration file:**
+   - Rename `config.example.json5` to `config.json5` in the `program/` directory
+   - Edit it (in a text editor) with your FTP/SFTP server details and project paths
 
-### Configuration
+2. **Launch the application:**
+   - Double-click `program/Wsync.exe`
 
-Create a `config.json5` file in the same directory as `Wsync.exe`. This file will contain your projects and FTP credentials.
+That's it! Select a project and the app automatically analyzes sync status.
 
-**⚠️ Important:** The `config.json5` file is ignored by git (see `.gitignore`). This is intentional to protect your credentials - never commit this file!
+## Configuration
 
-#### Default Configuration Template
+### Configuration File Structure
 
-Create `config.json5` with the following structure:
+Edit `config.json5`:
 
 ```json5
 {
-  // List of projects to sync
-  "Projects": [
+  projects: [
     {
-      "Name": "My Project",
-      "LocalPath": "C:\\Users\\YourName\\Documents\\MyProject",
-      "FtpRemotePath": "/www/my-project"
+      name: "project 1", // As displayed in the projects list
+      localPath: "D:\\dev\\project1", // Full path to your local project folder
+      ftpRemotePath: "/work/dev/project1", // Remote path on the FTP server
     },
     {
-      "Name": "Another Project",
-      "LocalPath": "D:\\dev\\another-project",
-      "FtpRemotePath": "/www/another-project"
-    }
+      name: "project 2",
+      localPath: "D:\\architecture\\project2",
+      ftpRemotePath: "/work/project2",
+    },
   ],
 
-  // FTP connection settings (used for all projects)
-  "Ftp": {
-    "Host": "ftp.example.com",
-    "Port": 21,
-    "Username": "your-username",
-    "Password": "your-password",
-    "PassiveMode": true,
-    "Secure": false  // Set to true for SFTP (port 22 recommended)
-  }
+  ftp: {
+    host: "11.22.33.44",
+    port: 22, // Use 21 for standard FTP, 22 for SFTP
+    username: "user",
+    password: "pwd",
+    passiveMode: false, // Usually true for FTP connections
+    secure: true, // Set to true to use SFTP (SSH) instead of FTP
+  },
+  excludedExtensions: ["qzx", "zxq", "jqv", "vqx"],
+  excludedFolders: ["doNotSyncThisFolder"], // just folder names, without paths
 }
 ```
 
-#### Configuration Tips
+### Configuration Tips
 
 - **LocalPath**: Full path to your local project folder
 - **FtpRemotePath**: Remote path on the FTP server
-- **Port**: Use 21 for standard FTP, 22 for SFTP
-- **PassiveMode**: Usually `true` for FTP connections
-- **Secure**: Set to `true` to use SFTP (SSH) instead of FTP
+- **Secure**: `true` for SFTP (SSH), `false` for standard FTP
+- **ExcludedExtensions**: File types to skip during analysis (without dots)
+- **ExcludedFolders**: Folders to skip during analysis
 
-### Building
+---
+
+## (OPTIONAL) Building the App (for Developers)
+
+### Prerequisites
+- .NET 8 SDK
+- Visual Studio 2022 or Visual Studio Code
+
+### Build from Source
 
 ```powershell
+cd source
 dotnet build
 ```
 
-### Running
+### Run Locally
 
 ```powershell
+cd source
 dotnet run
 ```
 
-### Publishing to EXE
+### Publish as Standalone EXE
 
 Create a self-contained, standalone executable:
 
 ```powershell
+cd source
 dotnet publish -c Release -r win-x64 --self-contained
 ```
 
 The executable will be in `bin/Release/net8.0-windows/win-x64/publish/Wsync.exe`
 
-## UI Layout
+### Project Structure
 
-- **Top**: Project selector dropdown
-- **Middle**: Desktop (💻) and FTP Server (☁) icons
-- **Center**: Two sync buttons
-  - Left arrow (🟢 Green): Sync from FTP → Desktop
-  - Right arrow (🔵 Blue): Sync from Desktop → FTP
+```
+source/
+  ├── App.xaml / App.xaml.cs          # Application entry point
+  ├── MainWindow.xaml / MainWindow.xaml.cs  # Main UI
+  ├── Wsync.csproj                    # Project file
+  └── Services/
+      ├── ConfigService.cs            # Config loading/saving
+      └── FtpService.cs               # SFTP/SSH file comparison
+  └── Models/
+      └── ProjectConfig.cs            # Data models
+```
 
-## TODO
+### ⚠️ Important Security Notes
 
-- [ ] Implement FTP sync logic
-- [ ] Add progress indicators
-- [ ] Error handling and logging
-- [ ] File filtering/exclusion patterns
-- [ ] Drag-and-drop support
-- [ ] Settings dialog for credentials
+**DO NOT COMMIT `config.json5`** - This file contains your FTP/SFTP credentials!
+
+The file is already ignored by git (see `.gitignore`), but be extra careful:
+- Never push `config.json5` to version control
+- Always use `config.example.json5` as a template
+- Keep your FTP credentials safe and local
+
+---
 
 ## License
 

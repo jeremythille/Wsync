@@ -1,24 +1,25 @@
 {
   projects: [
     {
-      name: "project 1",
-      localPath: "D:\\dev\\project1",
-      ftpRemotePath: "/www/dev/project1",
+      name: "project 1", // As displayed in the projects list
+      localPath: "D:\\dev\\project1", // Full path to your local project folder
+      ftpRemotePath: "/work/dev/project1", // Remote path on the FTP server
     },
     {
       name: "project 2",
-      localPath: "D:\\dev\\project2",
-      ftpRemotePath: "/www/dev/project2",
+      localPath: "D:\\architecture\\project2",
+      ftpRemotePath: "/work/project2",
     },
   ],
+
   ftp: {
     host: "11.22.33.44",
-    port: 22,
+    port: 22, // Use 21 for standard FTP, 22 for SFTP
     username: "user",
     password: "pwd",
-    passiveMode: false,
-    secure: true,
+    passiveMode: false, // Usually true for FTP connections
+    secure: true, // Set to true to use SFTP (SSH) instead of FTP
   },
-  excludedExtensions: ["html", "css", "js"],
-  excludedFolders: ["assets", "public"],
+  excludedExtensions: ["qzx", "zxq", "jqv", "vqx"],
+  excludedFolders: ["doNotSyncThisFolder"], // just folder names, without paths
 }
