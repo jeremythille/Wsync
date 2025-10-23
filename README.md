@@ -7,6 +7,7 @@ A tiny, minimal Windows desktop application for synchronizing files between your
 - 🖥️ Clean, minimal UI - quickly see sync status at a glance
 - 📋 Easy per-project configuration - manage multiple projects
 - 🚀 Portable - no installation needed, can run from a USB key
+- 🪶 Super lightweight - less than 2 MB
 - 🔄 Bi-directional file sync (Desktop ↔ FTP/SFTP)
 - 🎯 Multiple analysis modes:
   - **Full**: Analyzes all files recursively
