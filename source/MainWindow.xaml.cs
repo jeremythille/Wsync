@@ -9,6 +9,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using Wsync.Models;
 using Wsync.Services;
 
 namespace Wsync;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
     private int _spinnerIndex = 0;
     private readonly string[] _spinnerFrames = { "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     private DateTime _lastCheckTime = DateTime.MinValue;
+    private DateTime _analysisStartTime = DateTime.MinValue;
     private CancellationTokenSource? _analysisCancellationToken;
     private bool _pendingSyncToFtp = false;  // Track which sync action is pending confirmation
 
@@ -49,21 +51,11 @@ public partial class MainWindow : Window
 
     private void LoadProjects()
     {
-        // Remember currently selected project
-        string previouslySelectedProject = null;
-        if (ProjectComboBox.SelectedIndex >= 0 && ProjectComboBox.SelectedIndex < ProjectComboBox.Items.Count)
-        {
-            var selectedItem = ProjectComboBox.Items[ProjectComboBox.SelectedIndex];
-            if (selectedItem is string && selectedItem.ToString() != "(No projects configured)")
-            {
-                previouslySelectedProject = selectedItem.ToString();
-            }
-        }
-        
         // Clear existing items
         ProjectComboBox.Items.Clear();
         ProjectComboBox.SelectionChanged -= ProjectComboBox_SelectionChanged;
         
+        var config = _configService.GetConfig();
         var projects = _configService.GetProjects();
         System.Diagnostics.Debug.WriteLine($"[MainWindow] LoadProjects called, found {projects.Count} projects");
         
@@ -83,10 +75,10 @@ public partial class MainWindow : Window
                 ProjectComboBox.Items.Add(project.Name);
             }
             
-            // Restore previously selected project, or select first one
-            if (!string.IsNullOrEmpty(previouslySelectedProject) && ProjectComboBox.Items.Contains(previouslySelectedProject))
+            // Restore last selected project from config by name, or select first one
+            if (!string.IsNullOrEmpty(config.LastProject) && ProjectComboBox.Items.Contains(config.LastProject))
             {
-                ProjectComboBox.SelectedItem = previouslySelectedProject;
+                ProjectComboBox.SelectedItem = config.LastProject;
             }
             else
             {
@@ -98,6 +90,14 @@ public partial class MainWindow : Window
             
             UpdateStatus("Ready. Select a project to analyze.", "", "");
         }
+        
+        // Load the analysis mode from config
+        LoadAnalysisMode(config.Mode);
+    }
+    
+    private void LoadAnalysisMode(AnalysisMode mode)
+    {
+        ModeComboBox.SelectedIndex = (int)mode;
     }
 
     private async void ProjectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -133,10 +133,15 @@ public partial class MainWindow : Window
         _analysisCancellationToken = new CancellationTokenSource();
 
         var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
-        var ftpConfig = _configService.GetConfig().Ftp;
-        var fastMode = FastModeCheckBox.IsChecked ?? false;
+        var config = _configService.GetConfig();
+        var ftpConfig = config.Ftp;
+        
+        // Save the current project and mode to config
+        config.LastProject = selectedProject.Name;
+        config.Mode = (AnalysisMode)ModeComboBox.SelectedIndex;
+        _configService.SaveConfig(config);
 
-        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, fastMode);
+        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, config.Mode);
         _ftpService.SetStatusCallback(UpdateAnalysisStatus);
 
         try
@@ -147,6 +152,8 @@ public partial class MainWindow : Window
             LoadingSpinner.Visibility = Visibility.Visible;
             AbortAnalysisButton.Visibility = Visibility.Visible;
             UpdateStatus("Analyzing files...", "", "");
+            
+            _analysisStartTime = DateTime.Now;
             
             SyncLeftButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
             SyncRightButton.Background = new SolidColorBrush(Color.FromRgb(200, 200, 200));
@@ -236,6 +243,10 @@ public partial class MainWindow : Window
         var checkTime = _lastCheckTime.ToString("yyyy-MM-dd HH:mm:ss");
         var result = _ftpService?.LastComparisonResult;
         
+        // Calculate elapsed time
+        var elapsedTime = _lastCheckTime - _analysisStartTime;
+        var elapsedStr = $"{elapsedTime.Minutes}'{elapsedTime.Seconds:D2}";
+        
         // If there's an error, show it prominently
         if (!string.IsNullOrEmpty(result?.Error))
         {
@@ -244,7 +255,7 @@ public partial class MainWindow : Window
         }
 
         var fileListText = BuildFileListText(result);
-        var header = $"Checked on {checkTime}\n\n";
+        var header = $"Checked on {checkTime} in {elapsedStr}\n\n";
         
         switch (recommendation)
         {
@@ -470,10 +481,10 @@ public partial class MainWindow : Window
             }
 
             var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
-            var ftpConfig = _configService.GetConfig().Ftp;
-            var fastMode = FastModeCheckBox.IsChecked ?? false;
+            var config = _configService.GetConfig();
+            var ftpConfig = config.Ftp;
 
-            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, fastMode);
+            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, config.Mode);
             _ftpService.SetStatusCallback(UpdateAnalysisStatus);
             
             // Need to analyze first to populate LastComparisonResult
@@ -556,6 +567,17 @@ public partial class MainWindow : Window
             UpdateStatus($"Sync failed: {ex.Message}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
+        }
+    }
+
+    private void ModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Save the selected mode to config
+        if (ModeComboBox.SelectedIndex >= 0)
+        {
+            var config = _configService.GetConfig();
+            config.Mode = (AnalysisMode)ModeComboBox.SelectedIndex;
+            _configService.SaveConfig(config);
         }
     }
 }

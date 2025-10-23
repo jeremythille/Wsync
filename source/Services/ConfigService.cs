@@ -99,10 +99,15 @@ public class ConfigService
         }
     }
 
-    public void SaveConfig()
+    public void SaveConfig(AppConfig? config = null)
     {
         try
         {
+            if (config != null)
+            {
+                _config = config;
+            }
+            
             var settings = new JsonSerializerSettings
             {
                 Formatting = Formatting.Indented

@@ -41,12 +41,12 @@ public class ComparisonResult
 }
 
 /// <summary>
-/// Holds file metadata: hash and timestamp
+/// Holds file metadata: timestamp and size for fast comparison
 /// </summary>
 internal class FileMetadata
 {
-    public string Hash { get; set; } = "";
     public DateTime Timestamp { get; set; }
+    public long Size { get; set; }
 }
 
 /// <summary>
@@ -57,10 +57,11 @@ public class FtpService
     private readonly FtpConnectionConfig _ftpConfig;
     private readonly string _localPath;
     private readonly string _remotePath;
-    private readonly bool _fastMode;
+    private readonly AnalysisMode _analysisMode;
     private Action<string>? _statusCallback;
     public ComparisonResult? LastComparisonResult { get; private set; }
     private SshClient? _sshClientCache; // Reusable SSH client for hash computation
+    private readonly List<string> _excludedExtensions;
     
     // Parallel SSH connection pool
     private readonly List<SshClient> _sshConnectionPool = new();
@@ -71,39 +72,62 @@ public class FtpService
     private const int MaxDepthNormalMode = int.MaxValue; // No limit
     private const int DecisionThreshold = 3; // For fast mode: decide after finding 3 differing files
 
-    // Folders to ignore when scanning
-    private readonly string[] _ignoredFolders = new[]
+    // Hardcoded folders to ignore when scanning
+    private readonly string[] _hardcodedIgnoredFolders = new[]
     {
         "node_modules",
         ".git",
         ".svn",
+        ".vscode",
+        ".github",
         "bin",
         "obj",
         "dist",
         "build",
         ".vs",
-        ".vscode",
         "packages",
         "__pycache__",
         ".pytest_cache",
         "venv",
         "env",
-        ".next",
-        ".nuxt",
         ".angular",
-        "bower_components",
         ".idea",
         ".DS_Store",
         "Thumbs.db",
-        "non-code"  // Ignore non-code folder
+        "non-code",
+        "test-results",
+        "playwright-report"
     };
 
-    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, bool fastMode = false)
+    // All ignored folders (hardcoded + from config)
+    private readonly List<string> _ignoredFolders;
+
+    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? excludedFolders = null, AnalysisMode analysisMode = AnalysisMode.Full)
     {
         _ftpConfig = ftpConfig;
         _localPath = localPath;
         _remotePath = remotePath;
-        _fastMode = fastMode;
+        _analysisMode = analysisMode;
+        _excludedExtensions = excludedExtensions ?? new List<string>();
+
+        // Merge hardcoded ignored folders with config-provided excluded folders
+        _ignoredFolders = new List<string>(_hardcodedIgnoredFolders);
+        if (excludedFolders != null)
+        {
+            _ignoredFolders.AddRange(excludedFolders);
+        }
+    }
+
+    /// <summary>
+    /// Checks if a file should be excluded based on its extension
+    /// </summary>
+    private bool IsFileExcluded(string filename)
+    {
+        if (_excludedExtensions.Count == 0)
+            return false;
+
+        var extension = Path.GetExtension(filename).TrimStart('.').ToLowerInvariant();
+        return _excludedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -121,6 +145,26 @@ public class FtpService
     {
         try
         {
+            // Check if Git mode is requested but .git folder doesn't exist
+            if (_analysisMode == AnalysisMode.Git)
+            {
+                var gitPath = Path.Combine(_localPath, ".git");
+                if (!Directory.Exists(gitPath))
+                {
+                    var errorMsg = $"Git mode selected but no .git folder found at {gitPath}";
+                    Log(errorMsg);
+                    LastComparisonResult = new ComparisonResult
+                    {
+                        Recommendation = SyncRecommendation.Unknown,
+                        Error = errorMsg
+                    };
+                    _statusCallback?.Invoke(errorMsg);
+                    return SyncRecommendation.Unknown;
+                }
+                
+                return await CompareGitCommitsAsync(cancellationToken);
+            }
+
             // Get local files
             _statusCallback?.Invoke("Scanning local files...");
             cancellationToken.ThrowIfCancellationRequested();
@@ -163,7 +207,7 @@ public class FtpService
                 _statusCallback?.Invoke($"Found {remoteFiles.Count} remote files. Comparing...");
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // Compare using hybrid checksum+timestamp approach
+                // Compare using timestamp and size
                 var result = CompareFileMetadata(localFiles, remoteFiles, cancellationToken);
                 LastComparisonResult = result;
                 _statusCallback?.Invoke("Analysis complete");
@@ -203,6 +247,223 @@ public class FtpService
                 Error = ex.Message
             };
             return SyncRecommendation.Unknown;
+        }
+    }
+
+    /// <summary>
+    /// Compares git commit timestamps between local and remote repositories
+    /// </summary>
+    private async Task<SyncRecommendation> CompareGitCommitsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _statusCallback?.Invoke("Getting local git commit timestamp...");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Get local commit timestamp
+            var localCommitTime = GetLocalGitCommitTimestamp();
+            if (localCommitTime == null)
+            {
+                var errorMsg = "Failed to read local git commit timestamp";
+                Log(errorMsg);
+                LastComparisonResult = new ComparisonResult
+                {
+                    Recommendation = SyncRecommendation.Unknown,
+                    Error = errorMsg
+                };
+                _statusCallback?.Invoke(errorMsg);
+                return SyncRecommendation.Unknown;
+            }
+
+            _statusCallback?.Invoke("Getting remote git commit timestamp...");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Get remote commit timestamp via SSH
+            var remoteCommitTime = await GetRemoteGitCommitTimestampAsync(cancellationToken);
+            if (remoteCommitTime == null)
+            {
+                var errorMsg = "Failed to read remote git commit timestamp.\n\nPossible causes:\n• Git not installed on remote server\n• Remote path is not in a git repository\n• SSH connection failed\n\nCheck the detailed logs for more information.";
+                Log(errorMsg);
+                LastComparisonResult = new ComparisonResult
+                {
+                    Recommendation = SyncRecommendation.Unknown,
+                    Error = errorMsg
+                };
+                _statusCallback?.Invoke(errorMsg);
+                return SyncRecommendation.Unknown;
+            }
+
+            Log($"Local commit: {localCommitTime:yyyy-MM-dd HH:mm:ss}");
+            Log($"Remote commit: {remoteCommitTime:yyyy-MM-dd HH:mm:ss}");
+
+            var timeDiff = localCommitTime.Value - remoteCommitTime.Value;
+            
+            var result = new ComparisonResult
+            {
+                Recommendation = SyncRecommendation.Unknown,
+                NewerLocalFiles = new(),
+                NewerRemoteFiles = new(),
+                LocalOnlyFiles = new(),
+                RemoteOnlyFiles = new()
+            };
+
+            if (timeDiff > TimeSpan.Zero)
+            {
+                result.Recommendation = SyncRecommendation.SyncToFtp;
+                result.NewerLocalFiles.Add($"Local repository (commit: {localCommitTime:yyyy-MM-dd HH:mm:ss})");
+            }
+            else if (timeDiff < TimeSpan.Zero)
+            {
+                result.Recommendation = SyncRecommendation.SyncToLocal;
+                result.NewerRemoteFiles.Add($"Remote repository (commit: {remoteCommitTime:yyyy-MM-dd HH:mm:ss})");
+            }
+            else
+            {
+                result.Recommendation = SyncRecommendation.InSync;
+            }
+
+            LastComparisonResult = result;
+            _statusCallback?.Invoke("Git comparison complete");
+            return result.Recommendation;
+        }
+        catch (Exception ex)
+        {
+            Log($"Error comparing git commits: {ex.Message}");
+            _statusCallback?.Invoke($"Error: {ex.Message}");
+            LastComparisonResult = new ComparisonResult
+            {
+                Recommendation = SyncRecommendation.Unknown,
+                Error = ex.Message
+            };
+            return SyncRecommendation.Unknown;
+        }
+        finally
+        {
+            CleanupSshConnection();
+        }
+    }
+
+    /// <summary>
+    /// Gets the local git repository's latest commit timestamp
+    /// </summary>
+    private DateTime? GetLocalGitCommitTimestamp()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "-C \"" + _localPath + "\" log -1 --format=%cI",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var process = System.Diagnostics.Process.Start(psi))
+            {
+                if (process == null)
+                    return null;
+
+                var output = process.StandardOutput.ReadToEnd().Trim();
+                process.WaitForExit();
+
+                if (process.ExitCode != 0)
+                {
+                    Log($"Git command failed: {process.StandardError.ReadToEnd()}");
+                    return null;
+                }
+
+                if (string.IsNullOrEmpty(output))
+                    return null;
+
+                // Parse ISO 8601 format (e.g., "2025-10-23T15:30:22+02:00")
+                if (DateTime.TryParse(output, out var commitTime))
+                {
+                    return commitTime.ToUniversalTime();
+                }
+
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error getting local git commit timestamp: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets the remote git repository's latest commit timestamp via SSH
+    /// </summary>
+    private async Task<DateTime?> GetRemoteGitCommitTimestampAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using (var sshClient = new SshClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
+            {
+                await Task.Run(() => sshClient.Connect(), cancellationToken);
+                
+                try
+                {
+                    // Try different possible git paths
+                    string[] gitPaths = { "git", "/usr/bin/git", "/usr/local/bin/git", "/opt/git/bin/git" };
+                    var gitErrors = new List<string>();
+                    
+                    foreach (var gitPath in gitPaths)
+                    {
+                        // Get the git root directory (always has .git in root, not in the remote path)
+                        var gitRootCmd = $"cd {_remotePath} && {gitPath} rev-parse --show-toplevel";
+                        var rootResult = sshClient.RunCommand(gitRootCmd);
+                        
+                        if (rootResult.ExitStatus == 0)
+                        {
+                            var gitRoot = rootResult.Result.Trim();
+                            
+                            // Now get the commit timestamp from the git root
+                            var cmd = $"cd {gitRoot} && {gitPath} log -1 --format=%cI";
+                            var result = sshClient.RunCommand(cmd);
+
+                            if (result.ExitStatus == 0 && !string.IsNullOrEmpty(result.Result.Trim()))
+                            {
+                                var output = result.Result.Trim();
+                                
+                                // Parse ISO 8601 format
+                                if (DateTime.TryParse(output, out var commitTime))
+                                {
+                                    Log($"Remote git commit: {output} (from {gitPath})");
+                                    return commitTime.ToUniversalTime();
+                                }
+                                else
+                                {
+                                    gitErrors.Add($"{gitPath}: Failed to parse timestamp '{output}'");
+                                }
+                            }
+                            else
+                            {
+                                gitErrors.Add($"{gitPath}: Command failed with exit code {result.ExitStatus}. Error: {result.Error?.Trim()}");
+                            }
+                        }
+                        else
+                        {
+                            gitErrors.Add($"{gitPath}: {rootResult.Error?.Trim() ?? "command not found"}");
+                        }
+                    }
+
+                    var errorDetails = string.Join(" | ", gitErrors);
+                    Log($"Git not found at any of the standard paths. Details: {errorDetails}");
+                    return null;
+                }
+                finally
+                {
+                    sshClient.Disconnect();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error getting remote git commit timestamp: {ex.Message}");
+            return null;
         }
     }
 
@@ -331,27 +592,31 @@ public class FtpService
         try
         {
             var dir = new DirectoryInfo(_localPath);
-            int maxDepth = _fastMode ? MaxDepthFastMode : MaxDepthNormalMode;
+            int maxDepth = _analysisMode == AnalysisMode.Quick ? MaxDepthFastMode : MaxDepthNormalMode;
             var fileInfos = GetFilesRecursive(dir, currentDepth: 0, maxDepth: maxDepth);
 
-            if (_fastMode && fileInfos.Count > 0)
+            if (_analysisMode == AnalysisMode.Quick && fileInfos.Count > 0)
             {
-                Log($"Fast mode enabled: Analyzing only {fileInfos.Count} files (root + 1 level deep)");
+                Log($"Quick mode enabled: Analyzing only {fileInfos.Count} files (root + 1 level deep)");
             }
 
-            // Process files in parallel for faster hashing
+            // Collect file metadata (size and timestamp only, no hashing)
             foreach (var file in fileInfos)
             {
+                // Skip files with excluded extensions
+                if (IsFileExcluded(file.Name))
+                {
+                    continue;
+                }
+
                 // Use the relative path from localPath as the key, normalized to forward slashes for comparison
                 var relativePath = Path.GetRelativePath(_localPath, file.FullName);
                 var normalizedPath = relativePath.Replace('\\', '/');
                 
-                // Compute hash (runs synchronously, but this method is called from thread pool already)
-                var hash = ComputeFileHash(file.FullName);
                 files[normalizedPath] = new FileMetadata 
                 { 
-                    Hash = hash,
-                    Timestamp = file.LastWriteTimeUtc
+                    Timestamp = file.LastWriteTimeUtc,
+                    Size = file.Length
                 };
             }
 
@@ -424,13 +689,13 @@ public class FtpService
 
             // Recursively get all files from the remote path
             Log($"SFTP: Starting file enumeration from: {_remotePath}");
-            if (_fastMode)
+            if (_analysisMode == AnalysisMode.Quick)
             {
-                Log($"SFTP: Fast mode enabled - limiting analysis to root and 1 level deep");
+                Log($"SFTP: Quick mode enabled - limiting analysis to root and 1 level deep");
             }
             try
             {
-                int maxDepth = _fastMode ? MaxDepthFastMode : MaxDepthNormalMode;
+                int maxDepth = _analysisMode == AnalysisMode.Quick ? MaxDepthFastMode : MaxDepthNormalMode;
                 await GetRemoteFilesRecursiveAsync(client, _remotePath, "", files, currentDepth: 0, maxDepth: maxDepth, cancellationToken: cancellationToken);
                 Log($"SFTP: File enumeration completed. Found {files.Count} files total");
             }
@@ -471,9 +736,6 @@ public class FtpService
         var nonDotCount = itemList.Count(x => !x.Name.StartsWith("."));
         Log($"SFTP: Found {nonDotCount} item{(nonDotCount != 1 ? "s" : "")} in {remotePath}");
 
-        // Collect files for parallel hash computation
-        var filesNeedingHash = new List<(string key, string fullPath, DateTime lastWriteTime, long size)>();
-
         foreach (var item in itemList)
         {
             // Skip . and ..
@@ -506,9 +768,19 @@ public class FtpService
                 }
                 else if (item.IsRegularFile)
                 {
+                    // Skip files with excluded extensions
+                    if (IsFileExcluded(item.Name))
+                    {
+                        continue;
+                    }
+
                     var key = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
-                    // Store both SFTP timestamp and full path for later SSH lookup if needed
-                    filesNeedingHash.Add((key, item.FullName, item.LastWriteTime, item.Attributes.Size));
+                    // Store metadata: timestamp and size for fast comparison
+                    files[key] = new FileMetadata 
+                    { 
+                        Timestamp = DateTime.SpecifyKind(item.LastWriteTime, DateTimeKind.Utc),
+                        Size = item.Attributes.Size
+                    };
                 }
             }
             catch (Exception ex)
@@ -517,68 +789,6 @@ public class FtpService
                 // Continue with next item even if one fails
             }
         }
-
-        // First, get accurate timestamps for all files via SSH (stat command returns Unix timestamp in UTC)
-        var timestampDict = new Dictionary<string, DateTime>();
-        var sshClient = await GetSshConnectionAsync();
-        try
-        {
-            foreach (var f in filesNeedingHash)
-            {
-                try
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var command = sshClient.RunCommand($"stat -c %Y \"{f.fullPath}\"");
-                    if (command.ExitStatus == 0 && long.TryParse(command.Result.Trim(), out long unixTimestamp))
-                    {
-                        // Convert Unix timestamp to DateTime UTC
-                        timestampDict[f.key] = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unixTimestamp);
-                    }
-                    else
-                    {
-                        // Fallback to SFTP timestamp if stat fails
-                        timestampDict[f.key] = DateTime.SpecifyKind(f.lastWriteTime, DateTimeKind.Utc);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"Warning: Could not get timestamp for {f.key} via SSH: {ex.Message}, using SFTP timestamp");
-                    timestampDict[f.key] = DateTime.SpecifyKind(f.lastWriteTime, DateTimeKind.Utc);
-                }
-            }
-        }
-        finally
-        {
-            ReturnSshConnection(sshClient);
-        }
-
-        // Process files in parallel (with max 5 concurrent SSH operations)
-        // Log($"SFTP: Computing hashes for {filesNeedingHash.Count} files in parallel (max {MaxParallelConnections} concurrent)");
-        var hashTasks = filesNeedingHash.Select(async (f) =>
-        {
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                // Log($"SFTP: Computing hash for file: {f.key} (size: {f.size} bytes)");
-                var hash = await ComputeRemoteFileHashAsync(client, f.fullPath, cancellationToken);
-                files[f.key] = new FileMetadata { Hash = hash, Timestamp = timestampDict[f.key] };
-                // Log($"SFTP: Hash completed for {f.key}: {hash.Substring(0, Math.Min(8, hash.Length))}...");
-            }
-            catch (OperationCanceledException)
-            {
-                Log($"SFTP: Hash computation for {f.key} was canceled");
-                throw;
-            }
-            catch (Exception hashEx)
-            {
-                Log($"SFTP: Error computing hash for {f.key}: {hashEx.Message}");
-                // Store with empty hash on error - comparison will treat as different
-                files[f.key] = new FileMetadata { Hash = "", Timestamp = timestampDict[f.key] };
-            }
-        });
-
-        await Task.WhenAll(hashTasks);
-        Log($"SFTP: All {filesNeedingHash.Count} hashes completed for this directory");
     }
 
     /// <summary>
@@ -589,169 +799,6 @@ public class FtpService
     /// <summary>
     /// Computes the MD5 hash of a file on the local filesystem
     /// </summary>
-    private string ComputeFileHash(string filePath)
-    {
-        using (var md5 = MD5.Create())
-        using (var stream = File.OpenRead(filePath))
-        {
-            byte[] hash = md5.ComputeHash(stream);
-            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-        }
-    }
-
-    /// <summary>
-    /// Computes the MD5 hash of a file on the remote SFTP server
-    /// </summary>
-    private async Task<string> ComputeRemoteFileHashAsync(SftpClient client, string remotePath, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        
-        // Try to use SSH command first (faster for large files)
-        try
-        {
-            // Log($"Hash: Attempting SSH-based hash computation for {remotePath}");
-            var hash = await ComputeRemoteFileHashViaSshAsync(remotePath, cancellationToken);
-            if (!string.IsNullOrEmpty(hash))
-            {
-                // Log($"Hash: SSH hash succeeded");
-                return hash;
-            }
-            Log($"Hash: SSH hash returned empty, attempting SFTP fallback");
-        }
-        catch (OperationCanceledException)
-        {
-            Log($"Hash: SSH hash computation was canceled for {remotePath}");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Log($"Hash: SSH hash failed ({ex.GetType().Name}), falling back to SFTP download: {ex.Message}");
-        }
-
-        // Fallback: Download file to memory and compute hash
-        // Log($"Hash: Computing MD5 hash via SFTP download for {remotePath}");
-        using (var memoryStream = new System.IO.MemoryStream())
-        {
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                client.DownloadFile(remotePath, memoryStream);
-                memoryStream.Position = 0;
-                
-                using (var md5 = MD5.Create())
-                {
-                    byte[] hashBytes = md5.ComputeHash(memoryStream);
-                    var hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
-                    // Log($"Hash: SFTP hash computed successfully: {hash.Substring(0, Math.Min(8, hash.Length))}...");
-                    return hash;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Log($"Hash: SFTP hash computation was canceled for {remotePath}");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                Log($"Hash: SFTP hash computation failed - {ex.GetType().Name}: {ex.Message}");
-                throw;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Computes MD5 hash via remote SSH command (faster for large files)
-    /// Uses command semaphore to limit concurrent SSH operations to 5
-    /// </summary>
-    private async Task<string> ComputeRemoteFileHashViaSshAsync(string remotePath, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        
-        // Acquire semaphore to limit concurrent SSH commands
-        await _sshCommandSemaphore.WaitAsync(cancellationToken);
-        
-        SshClient? client = null;
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            
-            // Get a connection from the pool (or create new one, with max 5 parallel)
-            client = await GetSshConnectionAsync();
-
-            if (!client.IsConnected)
-            {
-                Log($"SSH: SSH client is not connected (IsConnected=false)");
-                return ""; // SSH not available
-            }
-
-            Log($"SSH: Computing hash for: {remotePath}");
-
-            // Try md5sum first (Linux), then md5 (macOS/BSD)
-            var commands = new[] { $"md5sum {EscapeShellPath(remotePath)}", $"md5 -r {EscapeShellPath(remotePath)}" };
-            
-            foreach (var cmd in commands)
-            {
-                try
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    
-                    // Log($"SSH: Executing command: {cmd}");
-                    var result = client.RunCommand(cmd);
-                    
-                    if (result.ExitStatus == 0 && !string.IsNullOrWhiteSpace(result.Result))
-                    {
-                        // Extract hash from output
-                        // md5sum format: "hash  filename"
-                        // md5 format: "MD5 (filename) = hash"
-                        var parts = result.Result.Trim().Split(new[] { ' ', '=' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 1)
-                        {
-                            var hash = parts[0].ToLowerInvariant();
-                            if (hash.Length == 32 && hash.All(c => "0123456789abcdef".Contains(c)))
-                            {
-                                // Log($"SSH: Hash computed successfully via SSH: {hash}");
-                                return await Task.FromResult(hash);
-                            }
-                        }
-                        // Log($"SSH: Command succeeded but hash format unexpected: {result.Result.Substring(0, Math.Min(100, result.Result.Length))}");
-                    }
-                    else if (result.ExitStatus != 0)
-                    {
-                        Log($"SSH: Command '{cmd}' failed with exit code {result.ExitStatus}. Error: {result.Error}");
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    Log($"SSH: Command execution was canceled");
-                    throw;
-                }
-                catch (Exception cmdEx)
-                {
-                    Log($"SSH: Exception executing command: {cmdEx.Message}");
-                    // Try next command
-                }
-            }
-            
-            Log($"SSH: Hash computation failed for {remotePath}, will fallback to SFTP download");
-            return ""; // Return empty if SSH hash failed
-        }
-        catch (Exception ex)
-        {
-            Log($"SSH: Unexpected error - {ex.GetType().Name}: {ex.Message}");
-            return ""; // SSH not available
-        }
-        finally
-        {
-            if (client != null)
-            {
-                ReturnSshConnection(client);
-            }
-            
-            // Release command semaphore to allow next command
-            _sshCommandSemaphore.Release();
-        }
-    }
-
     /// <summary>
     /// Escapes a file path for use in shell commands
     /// </summary>
@@ -762,9 +809,9 @@ public class FtpService
     }
 
     /// <summary>
-    /// Compares local and remote file metadata using hybrid approach:
-    /// - Same checksum = files in sync (identical content)
-    /// - Different checksum = compare timestamps to determine newer version
+    /// Compares local and remote file metadata using timestamp and size:
+    /// - Same timestamp + size = files in sync
+    /// - Different = compare timestamps to determine newer version
     /// </summary>
     private ComparisonResult CompareFileMetadata(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken = default)
     {
@@ -793,63 +840,64 @@ public class FtpService
             if (remoteFiles.TryGetValue(localFile.Key, out var remoteMetadata))
             {
                 // File exists on both sides
-                if (localFile.Value.Hash == remoteMetadata.Hash)
+                // Compare using timestamp and size
+                var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
+                var sizeDiff = localFile.Value.Size - remoteMetadata.Size;
+                
+                // If both timestamp and size are identical, file is in sync
+                if (timeDiff == TimeSpan.Zero && sizeDiff == 0)
                 {
-                    // Same content - file is in sync (ignore timestamp differences)
+                    // File is in sync
                     continue;
+                }
+                
+                // File differs - determine which is newer based on timestamp
+                if (timeDiff > TimeSpan.Zero)
+                {
+                    // Local is newer
+                    newerLocal++;
+                    newerLocalFiles.Add(localFile.Key);
+                    if (string.IsNullOrEmpty(localExample))
+                    {
+                        localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes), FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes)";
+                    }
+                    
+                    // Quick mode: if we found 3 files newer locally, decide to sync to FTP
+                    if (_analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0)
+                    {
+                        Log($"\n[QUICK MODE] Found {DecisionThreshold} files newer locally - deciding to sync to FTP");
+                        decidedEarly = true;
+                        earlyDecision = SyncRecommendation.SyncToFtp;
+                        break;
+                    }
+                }
+                else if (timeDiff < TimeSpan.Zero)
+                {
+                    // Remote is newer
+                    newerRemote++;
+                    newerRemoteFiles.Add(localFile.Key);
+                    if (string.IsNullOrEmpty(remoteExample))
+                    {
+                        remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes), Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes)";
+                    }
+                    
+                    // Quick mode: if we found 3 files newer remotely, decide to sync to local
+                    if (_analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0)
+                    {
+                        Log($"\n[QUICK MODE] Found {DecisionThreshold} files newer on FTP - deciding to sync to local");
+                        decidedEarly = true;
+                        earlyDecision = SyncRecommendation.SyncToLocal;
+                        break;
+                    }
                 }
                 else
                 {
-                    // Different content - compare timestamps to determine which is newer
-                    var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
-                    
-                    if (timeDiff > TimeSpan.Zero)
+                    // Same timestamp but different size - flag as conflict
+                    newerLocal++;
+                    newerLocalFiles.Add(localFile.Key);
+                    if (string.IsNullOrEmpty(localExample))
                     {
-                        // Local is newer
-                        newerLocal++;
-                        newerLocalFiles.Add(localFile.Key);
-                        if (string.IsNullOrEmpty(localExample))
-                        {
-                            localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss}, FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss}";
-                        }
-                        
-                        // Fast mode: if we found 3 files newer locally, decide to sync to FTP
-                        if (_fastMode && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0)
-                        {
-                            Log($"\n[FAST MODE] Found {DecisionThreshold} files newer locally - deciding to sync to FTP");
-                            decidedEarly = true;
-                            earlyDecision = SyncRecommendation.SyncToFtp;
-                            break;
-                        }
-                    }
-                    else if (timeDiff < TimeSpan.Zero)
-                    {
-                        // Remote is newer
-                        newerRemote++;
-                        newerRemoteFiles.Add(localFile.Key);
-                        if (string.IsNullOrEmpty(remoteExample))
-                        {
-                            remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss}, Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss}";
-                        }
-                        
-                        // Fast mode: if we found 3 files newer remotely, decide to sync to local
-                        if (_fastMode && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0)
-                        {
-                            Log($"\n[FAST MODE] Found {DecisionThreshold} files newer on FTP - deciding to sync to local");
-                            decidedEarly = true;
-                            earlyDecision = SyncRecommendation.SyncToLocal;
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        // Exact same timestamp but different content - flag as conflict
-                        newerLocal++;
-                        newerLocalFiles.Add(localFile.Key);
-                        if (string.IsNullOrEmpty(localExample))
-                        {
-                            localExample = $"CONFLICT: {localFile.Key} (same timestamp, different content)";
-                        }
+                        localExample = $"CONFLICT: {localFile.Key} (same timestamp, size differs: {localFile.Value.Size} vs {remoteMetadata.Size})";
                     }
                 }
             }
