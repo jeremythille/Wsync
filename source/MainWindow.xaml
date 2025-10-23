@@ -229,7 +229,7 @@
             </Grid.RowDefinitions>
 
             <!-- Loading Spinner -->
-            <Grid Grid.Row="0" x:Name="LoadingSpinner" Height="20" Margin="27,15,27,8" HorizontalAlignment="Left" Visibility="Collapsed">
+            <Grid Grid.Row="0" x:Name="LoadingSpinner" Height="20" Margin="3,3,3,3" HorizontalAlignment="Left" Visibility="Collapsed">
                 <TextBlock x:Name="SpinnerText" Text="⠙" FontSize="18" Foreground="#0078D4"/>
             </Grid>
 
@@ -241,11 +241,11 @@
                      Foreground="#333"
                      TextWrapping="Wrap"
                      FontWeight="SemiBold"
-                     Margin="27,0,27,15"
+                     Margin="3,0,3,3"
                      IsReadOnly="True"
                      Background="White"
                      BorderThickness="0"
-                     Padding="0"
+                     Padding="3"
                      FontFamily="Segoe UI"
                      VerticalScrollBarVisibility="Auto"/>
         </Grid>

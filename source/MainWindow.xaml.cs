@@ -251,11 +251,27 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(result?.Error))
         {
             RecommendationText.Text = $"❌ {result.Error}";
+            RecommendationText.FontFamily = new System.Windows.Media.FontFamily("Segoe UI");
             return;
         }
 
         var fileListText = BuildFileListText(result);
         var header = $"Checked on {checkTime} in {elapsedStr}\n\n";
+        
+            // Detect if this is git mode for font selection
+            bool isGitMode = (result?.NewerLocalFiles.Count + result?.NewerRemoteFiles.Count > 0) &&
+                            result?.LocalOnlyFiles.Count == 0 &&
+                            result?.RemoteOnlyFiles.Count == 0 &&
+                            ((result?.NewerLocalFiles.FirstOrDefault()?.Contains("(newer)") ?? false) ||
+                             (result?.NewerLocalFiles.FirstOrDefault()?.Contains("(older)") ?? false) ||
+                             (result?.NewerLocalFiles.FirstOrDefault()?.Contains("(same)") ?? false));        if (isGitMode)
+        {
+            RecommendationText.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+        }
+        else
+        {
+            RecommendationText.FontFamily = new System.Windows.Media.FontFamily("Segoe UI");
+        }
         
         switch (recommendation)
         {
@@ -286,72 +302,120 @@ public partial class MainWindow : Window
         if (result == null) return "";
 
         var sb = new System.Text.StringBuilder();
+        
+        // Check if this is a git mode comparison (commits only)
+        // Git mode only has entries in NewerLocalFiles or NewerRemoteFiles with commit info
+        bool isGitMode = (result.NewerLocalFiles.Count + result.NewerRemoteFiles.Count > 0) &&
+                        result.LocalOnlyFiles.Count == 0 &&
+                        result.RemoteOnlyFiles.Count == 0 &&
+                        ((result.NewerLocalFiles.FirstOrDefault()?.Contains("(newer)") ?? false) ||
+                         (result.NewerLocalFiles.FirstOrDefault()?.Contains("(older)") ?? false) ||
+                         (result.NewerLocalFiles.FirstOrDefault()?.Contains("(same)") ?? false));
 
-        // FILES NEWER LOCALLY
-        sb.AppendLine($"FILES NEWER LOCALLY ({result.NewerLocalFiles.Count}):");
-        if (result.NewerLocalFiles.Count > 0)
+        if (isGitMode)
         {
-            foreach (var file in result.NewerLocalFiles.Take(10))
+            // Git mode: show commit comparison only
+            if (result.NewerLocalFiles.Count > 0)
             {
-                sb.AppendLine($"  • {file}");
+                foreach (var commit in result.NewerLocalFiles)
+                {
+                    sb.AppendLine(commit);
+                }
             }
-            if (result.NewerLocalFiles.Count > 10)
-                sb.AppendLine($"  ... and {result.NewerLocalFiles.Count - 10} more");
+
+            if (result.NewerRemoteFiles.Count > 0)
+            {
+                foreach (var commit in result.NewerRemoteFiles)
+                {
+                    sb.AppendLine(commit);
+                }
+            }
+
+            if (result.Recommendation == SyncRecommendation.InSync)
+            {
+                sb.AppendLine("Both repositories have the same latest commit.");
+            }
         }
         else
         {
-            sb.AppendLine("  (No files)");
-        }
-        sb.AppendLine();
-
-        // FILES NEWER ON FTP
-        sb.AppendLine($"FILES NEWER ON FTP ({result.NewerRemoteFiles.Count}):");
-        if (result.NewerRemoteFiles.Count > 0)
-        {
-            foreach (var file in result.NewerRemoteFiles.Take(10))
+            // File mode: show file counts and details
+            
+            // FILES NEWER LOCALLY
+            var fnlLabel = $"FILES NEWER LOCALLY";
+            if (result.IsQuickModeEarlyDecision && result.NewerLocalFiles.Count >= 3)
+                fnlLabel += $" (at least {result.NewerLocalFiles.Count})";
+            else
+                fnlLabel += $" ({result.NewerLocalFiles.Count})";
+            sb.AppendLine($"{fnlLabel}:");
+            if (result.NewerLocalFiles.Count > 0)
             {
-                sb.AppendLine($"  • {file}");
+                foreach (var file in result.NewerLocalFiles.Take(10))
+                {
+                    sb.AppendLine($"  • {file}");
+                }
+                if (result.NewerLocalFiles.Count > 10)
+                    sb.AppendLine($"  ... and {result.NewerLocalFiles.Count - 10} more");
             }
-            if (result.NewerRemoteFiles.Count > 10)
-                sb.AppendLine($"  ... and {result.NewerRemoteFiles.Count - 10} more");
-        }
-        else
-        {
-            sb.AppendLine("  (No files)");
-        }
-        sb.AppendLine();
-
-        // FILES ONLY PRESENT LOCALLY
-        sb.AppendLine($"FILES ONLY PRESENT LOCALLY ({result.LocalOnlyFiles.Count}):");
-        if (result.LocalOnlyFiles.Count > 0)
-        {
-            foreach (var file in result.LocalOnlyFiles.Take(10))
+            else
             {
-                sb.AppendLine($"  • {file}");
+                sb.AppendLine("  (No files)");
             }
-            if (result.LocalOnlyFiles.Count > 10)
-                sb.AppendLine($"  ... and {result.LocalOnlyFiles.Count - 10} more");
-        }
-        else
-        {
-            sb.AppendLine("  (No files)");
-        }
-        sb.AppendLine();
+            sb.AppendLine();
 
-        // FILES ONLY PRESENT ON FTP
-        sb.AppendLine($"FILES ONLY PRESENT ON FTP ({result.RemoteOnlyFiles.Count}):");
-        if (result.RemoteOnlyFiles.Count > 0)
-        {
-            foreach (var file in result.RemoteOnlyFiles.Take(10))
+            // FILES NEWER ON FTP
+            var fterLabel = $"FILES NEWER ON FTP";
+            if (result.IsQuickModeEarlyDecision && result.NewerRemoteFiles.Count >= 3)
+                fterLabel += $" (at least {result.NewerRemoteFiles.Count})";
+            else
+                fterLabel += $" ({result.NewerRemoteFiles.Count})";
+            sb.AppendLine($"{fterLabel}:");
+            if (result.NewerRemoteFiles.Count > 0)
             {
-                sb.AppendLine($"  • {file}");
+                foreach (var file in result.NewerRemoteFiles.Take(10))
+                {
+                    sb.AppendLine($"  • {file}");
+                }
+                if (result.NewerRemoteFiles.Count > 10)
+                    sb.AppendLine($"  ... and {result.NewerRemoteFiles.Count - 10} more");
             }
-            if (result.RemoteOnlyFiles.Count > 10)
-                sb.AppendLine($"  ... and {result.RemoteOnlyFiles.Count - 10} more");
-        }
-        else
-        {
-            sb.AppendLine("  (No files)");
+            else
+            {
+                sb.AppendLine("  (No files)");
+            }
+            sb.AppendLine();
+
+            // FILES ONLY PRESENT LOCALLY
+            sb.AppendLine($"FILES ONLY PRESENT LOCALLY ({result.LocalOnlyFiles.Count}):");
+            if (result.LocalOnlyFiles.Count > 0)
+            {
+                foreach (var file in result.LocalOnlyFiles.Take(10))
+                {
+                    sb.AppendLine($"  • {file}");
+                }
+                if (result.LocalOnlyFiles.Count > 10)
+                    sb.AppendLine($"  ... and {result.LocalOnlyFiles.Count - 10} more");
+            }
+            else
+            {
+                sb.AppendLine("  (No files)");
+            }
+            sb.AppendLine();
+
+            // FILES ONLY PRESENT ON FTP
+            sb.AppendLine($"FILES ONLY PRESENT ON FTP ({result.RemoteOnlyFiles.Count}):");
+            if (result.RemoteOnlyFiles.Count > 0)
+            {
+                foreach (var file in result.RemoteOnlyFiles.Take(10))
+                {
+                    sb.AppendLine($"  • {file}");
+                }
+                if (result.RemoteOnlyFiles.Count > 10)
+                    sb.AppendLine($"  ... and {result.RemoteOnlyFiles.Count - 10} more");
+            }
+            else
+            {
+                sb.AppendLine("  (No files)");
+            }
         }
 
         return sb.ToString();
@@ -578,6 +642,9 @@ public partial class MainWindow : Window
             var config = _configService.GetConfig();
             config.Mode = (AnalysisMode)ModeComboBox.SelectedIndex;
             _configService.SaveConfig(config);
+            
+            // Automatically analyze when mode changes
+            _ = AnalyzeSyncStatusAsync();
         }
     }
 }
