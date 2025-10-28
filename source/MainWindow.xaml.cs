@@ -633,6 +633,7 @@ public partial class MainWindow : Window
 
     private async Task PerformSyncAsync(bool isSyncToFtp)
     {
+        System.Diagnostics.Debug.WriteLine($"[MainWindow] PerformSyncAsync called with isSyncToFtp={isSyncToFtp}");
         // Initialize FtpService if not already done
         if (_ftpService == null)
         {
@@ -707,11 +708,15 @@ public partial class MainWindow : Window
             // Perform the sync
             if (isSyncToFtp)
             {
-                await _ftpService.SyncToFtpAsync(UpdateAnalysisStatus);
+                // Wrap the callback to marshal UI updates to the UI thread
+                Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
+                await _ftpService.SyncToFtpAsync(uiCallback);
             }
             else
             {
-                await _ftpService.SyncToLocalAsync(UpdateAnalysisStatus);
+                // Wrap the callback to marshal UI updates to the UI thread
+                Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
+                await _ftpService.SyncToLocalAsync(uiCallback);
             }
 
             _spinnerTimer?.Stop();

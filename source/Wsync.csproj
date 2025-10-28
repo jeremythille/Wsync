@@ -18,7 +18,7 @@
     <ItemGroup>
       <FilesToCopy Include="$(TargetDir)**\*" Exclude="$(TargetDir)config.json5" />
     </ItemGroup>
-    <Copy SourceFiles="@(FilesToCopy)" DestinationFiles="@(FilesToCopy->'../program/%(Filename)%(Extension)')" />
+    <Copy SourceFiles="@(FilesToCopy)" DestinationFiles="@(FilesToCopy->'../program/%(RecursiveDir)%(Filename)%(Extension)')" />
   </Target>
 
 </Project>
