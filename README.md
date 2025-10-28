@@ -24,10 +24,11 @@ A tiny, minimal Windows desktop application for synchronizing files between your
 
 1. **Create a configuration file:**
    - Rename `config.example.json5` to `config.json5` in the `program/` directory
-   - Edit it (in a text editor) with your FTP/SFTP server details and project paths
+   - Edit it (in a text editor) with your FTP/SFTP server details and project paths (see below)
 
 2. **Launch the application:**
    - Double-click `program/Wsync.exe`
+   - Note: the program itself is very light, but it depends on Microsoft .net 8 libraries; if they're not installed on your system yet, you will be prompted to accept their installation.
 
 3. **Sync your files:**
    - Select a project from the dropdown

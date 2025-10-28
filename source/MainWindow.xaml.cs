@@ -102,13 +102,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void ProjectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void ProjectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // Update the path displays for the selected project
         UpdatePathDisplays();
         
-        // Automatically analyze when project selection changes
-        await AnalyzeSyncStatusAsync();
+        // Don't auto-analyze - wait for user to click Refresh
+        RecommendationText.Text = "Click Refresh to analyze files.";
     }
 
     private void UpdatePathDisplays()

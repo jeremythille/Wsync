@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Renci.SshNet;
 using Wsync.Models;
@@ -34,10 +35,14 @@ public class ComparisonResult
     public string LocalExample { get; set; } = "";
     public string RemoteExample { get; set; } = "";
     public string? Error { get; set; } = null;
-    public List<string> NewerLocalFiles { get; set; } = new();
-    public List<string> NewerRemoteFiles { get; set; } = new();
-    public List<string> LocalOnlyFiles { get; set; } = new();
-    public List<string> RemoteOnlyFiles { get; set; } = new();
+    public List<string> NewerLocalFiles { get; set; } = new();  // Source filenames for SyncToFtp (local)
+    public List<string> NewerRemoteFiles { get; set; } = new();  // Source filenames for SyncToLocal (remote)
+    public List<string> LocalOnlyFiles { get; set; } = new();   // Source filenames (local)
+    public List<string> RemoteOnlyFiles { get; set; } = new();  // Source filenames (remote)
+    
+    // Maps for case-insensitive matching: maps lowercase path to actual source filename (for upload/download operations)
+    public Dictionary<string, string> LocalFilenameMap { get; set; } = new();  // lowercase -> local filename
+    public Dictionary<string, string> RemoteFilenameMap { get; set; } = new();  // lowercase -> remote filename
     public bool IsQuickModeEarlyDecision { get; set; } = false;
 }
 
@@ -1119,6 +1124,10 @@ public class FtpService
         var localOnlyFiles = new List<string>();
         var remoteOnlyFiles = new List<string>();
         
+        // Maps for case-sensitive filename preservation: lowercase key -> actual filename from source
+        var localFilenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var remoteFilenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        
         bool decidedEarly = false;
         SyncRecommendation? earlyDecision = null;
         int filesProcessed = 0;
@@ -1135,19 +1144,63 @@ public class FtpService
             }
             filesProcessed++;
             
-            if (remoteFiles.TryGetValue(localFile.Key, out var remoteMetadata))
+            // Add to local filename map (preserve local case)
+            var localNormalized = localFile.Key.ToLowerInvariant();
+            if (!localFilenameMap.ContainsKey(localNormalized))
             {
-                // File exists on both sides
+                localFilenameMap[localNormalized] = localFile.Key;
+            }
+            
+            // Try case-sensitive match first, then case-insensitive
+            var remoteMetadata = null as FileMetadata;
+            var remoteKey = localFile.Key;
+            
+            if (!remoteFiles.TryGetValue(localFile.Key, out remoteMetadata))
+            {
+                // Try case-insensitive match
+                remoteKey = remoteFiles.Keys.FirstOrDefault(k => k.Equals(localFile.Key, StringComparison.OrdinalIgnoreCase));
+                if (remoteKey != null)
+                {
+                    remoteFiles.TryGetValue(remoteKey, out remoteMetadata);
+                    // Add to remote filename map (preserve remote case)
+                    var remoteNormalized = remoteKey.ToLowerInvariant();
+                    if (!remoteFilenameMap.ContainsKey(remoteNormalized))
+                    {
+                        remoteFilenameMap[remoteNormalized] = remoteKey;
+                    }
+                }
+            }
+            else
+            {
+                // Exact case match on remote - still add to map
+                var remoteNormalized = localFile.Key.ToLowerInvariant();
+                if (!remoteFilenameMap.ContainsKey(remoteNormalized))
+                {
+                    remoteFilenameMap[remoteNormalized] = localFile.Key;
+                }
+            }
+            
+            if (remoteMetadata != null)
+            {
+                // File exists on both sides (case-insensitive match)
                 var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
                 var sizeDiff = localFile.Value.Size - remoteMetadata.Size;
                 
-                LogDetailedToFileOnly($"\n{localFile.Key}:");
+                LogDetailedToFileOnly($"\n{remoteKey}:");  // Use remote key to preserve correct case
                 LogDetailedToFileOnly($"  - Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {localFile.Value.Size:N0} bytes");
                 LogDetailedToFileOnly($"  - Remote: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {remoteMetadata.Size:N0} bytes");
                 
-                if (timeDiff == TimeSpan.Zero && sizeDiff == 0)
+                // If sizes are identical, consider files in sync (timestamps can differ due to sync operations)
+                if (sizeDiff == 0)
                 {
-                    LogDetailedToFileOnly($"  Status: IN SYNC");
+                    if (timeDiff == TimeSpan.Zero)
+                    {
+                        LogDetailedToFileOnly($"  Status: IN SYNC (identical timestamp and size)");
+                    }
+                    else
+                    {
+                        LogDetailedToFileOnly($"  Status: IN SYNC (same size, timestamp differences are from sync)");
+                    }
                     continue;
                 }
                 
@@ -1161,10 +1214,10 @@ public class FtpService
                 {
                     LogDetailedToFileOnly($"  Status: LOCAL IS NEWER");
                     newerLocal++;
-                    newerLocalFiles.Add(localFile.Key);
+                    newerLocalFiles.Add(remoteKey);  // Use remote key to preserve correct case
                     if (string.IsNullOrEmpty(localExample))
                     {
-                        localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes), FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes)";
+                        localExample = $"Local: {remoteKey} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes), FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes)";
                     }
                     
                     if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0 && !decidedEarly)
@@ -1179,10 +1232,10 @@ public class FtpService
                 {
                     LogDetailedToFileOnly($"  Status: REMOTE IS NEWER");
                     newerRemote++;
-                    newerRemoteFiles.Add(localFile.Key);
+                    newerRemoteFiles.Add(remoteKey);  // Use remote key to preserve correct case
                     if (string.IsNullOrEmpty(remoteExample))
                     {
-                        remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes), Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes)";
+                        remoteExample = $"FTP: {remoteKey} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes), Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes)";
                     }
                     
                     if (analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0 && !decidedEarly)
@@ -1197,10 +1250,10 @@ public class FtpService
             else
             {
                 localOnly++;
-                localOnlyFiles.Add(localFile.Key);
+                localOnlyFiles.Add(remoteKey);  // Use remote key (or local key if no remote) - use remoteKey if available, otherwise localFile.Key
                 if (string.IsNullOrEmpty(localExample))
                 {
-                    localExample = $"Local only: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                    localExample = $"Local only: {remoteKey ?? localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
                 }
             }
         }
@@ -1218,7 +1271,18 @@ public class FtpService
                 }
                 filesProcessed++;
                 
-                if (!localFiles.ContainsKey(remoteFile.Key))
+                // Add to remote filename map (preserve remote case)
+                var remoteNormalized = remoteFile.Key.ToLowerInvariant();
+                if (!remoteFilenameMap.ContainsKey(remoteNormalized))
+                {
+                    remoteFilenameMap[remoteNormalized] = remoteFile.Key;
+                }
+                
+                // Check case-sensitive first, then case-insensitive
+                var existsLocally = localFiles.ContainsKey(remoteFile.Key) ||
+                    localFiles.Keys.Any(k => k.Equals(remoteFile.Key, StringComparison.OrdinalIgnoreCase));
+                
+                if (!existsLocally)
                 {
                     remoteOnly++;
                     remoteOnlyFiles.Add(remoteFile.Key);
@@ -1303,7 +1367,9 @@ public class FtpService
             NewerLocalFiles = newerLocalFiles,
             NewerRemoteFiles = newerRemoteFiles,
             LocalOnlyFiles = localOnlyFiles,
-            RemoteOnlyFiles = remoteOnlyFiles
+            RemoteOnlyFiles = remoteOnlyFiles,
+            LocalFilenameMap = localFilenameMap,
+            RemoteFilenameMap = remoteFilenameMap
         };
     }
 
@@ -1565,9 +1631,11 @@ public class FtpService
 
                     var filesToUpload = LastComparisonResult?.NewerLocalFiles ?? new();
                     filesToUpload.AddRange(LastComparisonResult?.LocalOnlyFiles ?? new());
+                    var localFilenameMap = LastComparisonResult?.LocalFilenameMap ?? new();
 
                     var totalFiles = filesToUpload.Count;
                     var uploadedCount = 0;
+                    var uploadedFileTimestamps = new List<(string remotePath, DateTime utcTime)>();
 
                     Log($"Starting upload of {totalFiles} files to FTP");
 
@@ -1575,7 +1643,13 @@ public class FtpService
                     {
                         try
                         {
-                            var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
+                            // Use LocalFilenameMap to get the correct local filename case
+                            var normalizedPath = relativeFile.ToLowerInvariant();
+                            var correctLocalCase = localFilenameMap.ContainsKey(normalizedPath) 
+                                ? localFilenameMap[normalizedPath] 
+                                : relativeFile;
+                            
+                            var localFile = Path.Combine(_localPath, correctLocalCase.Replace('/', Path.DirectorySeparatorChar));
                             var remoteFile = _remotePath + "/" + relativeFile;
 
                             // Ensure remote directory exists
@@ -1585,9 +1659,11 @@ public class FtpService
                             // Upload the file
                             if (File.Exists(localFile))
                             {
+                                var localFileInfo = new FileInfo(localFile);
                                 using (var fileStream = File.OpenRead(localFile))
                                 {
                                     client.UploadFile(fileStream, remoteFile, true);
+                                    uploadedFileTimestamps.Add((remoteFile, localFileInfo.LastWriteTimeUtc));
                                     uploadedCount++;
                                     progressCallback?.Invoke($"Uploaded {uploadedCount}/{totalFiles}: {relativeFile}");
                                     Log($"Uploaded: {relativeFile}");
@@ -1604,10 +1680,64 @@ public class FtpService
                     client.Disconnect();
                     Log($"Upload complete: {uploadedCount}/{totalFiles} files");
                     progressCallback?.Invoke($"✓ Upload complete: {uploadedCount}/{totalFiles} files");
+                    
+                    // Set timestamps via SSH batch command for uploaded files
+                    if (uploadedFileTimestamps.Count > 0)
+                    {
+                        Log("Setting remote file timestamps via SSH...");
+                        var sshConnectionInfo = new Renci.SshNet.ConnectionInfo(
+                            _ftpConfig.Host,
+                            _ftpConfig.Port,
+                            _ftpConfig.Username,
+                            new Renci.SshNet.PasswordAuthenticationMethod(_ftpConfig.Username, _ftpConfig.Password))
+                        {
+                            Timeout = TimeSpan.FromSeconds(30)
+                        };
+                        
+                        using (var sshClient = new Renci.SshNet.SshClient(sshConnectionInfo))
+                        {
+                            sshClient.Connect();
+                            
+                            // Build touch command for all uploaded files
+                            var touchCommands = new StringBuilder();
+                            foreach (var (remotePath, utcTime) in uploadedFileTimestamps)
+                            {
+                                var unixTimestamp = (long)(utcTime - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+                                // Use Perl-compatible format for maximum portability across servers
+                                touchCommands.AppendLine($"perl -e 'utime({unixTimestamp}, {unixTimestamp}, \"{remotePath}\")' 2>/dev/null || touch \"{remotePath}\"");
+                            }
+                            
+                            if (touchCommands.Length > 0)
+                            {
+                                try
+                                {
+                                    Log($"Executing timestamp commands for {uploadedFileTimestamps.Count} files");
+                                    var cmd = sshClient.CreateCommand(touchCommands.ToString());
+                                    var result = cmd.Execute();
+                                    Log($"Timestamp setting execution completed, result: {result}");
+                                    if (cmd.ExitStatus == 0)
+                                    {
+                                        Log($"Successfully set timestamps for {uploadedFileTimestamps.Count} files");
+                                    }
+                                    else
+                                    {
+                                        Log($"Warning: Timestamp command returned exit status {cmd.ExitStatus}, output: {result}");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log($"Warning: Could not set remote timestamps: {ex.Message}");
+                                }
+                            }
+                            
+                            sshClient.Disconnect();
+                        }
+                    }
                 }
 
                 // Delete files that only exist remotely (mirror sync)
                 var filesToDelete = LastComparisonResult?.RemoteOnlyFiles ?? new();
+                var remoteFilenameMapForDeletion = LastComparisonResult?.RemoteFilenameMap ?? new();
                 if (filesToDelete.Count > 0)
                 {
                     Log($"Deleting {filesToDelete.Count} remote-only files to mirror local");
@@ -1628,7 +1758,13 @@ public class FtpService
                         {
                             try
                             {
-                                var remoteFile = _remotePath + "/" + relativeFile;
+                                // Use RemoteFilenameMap to get the correct remote filename case
+                                var normalizedPath = relativeFile.ToLowerInvariant();
+                                var correctRemoteCase = remoteFilenameMapForDeletion.ContainsKey(normalizedPath) 
+                                    ? remoteFilenameMapForDeletion[normalizedPath] 
+                                    : relativeFile;
+                                
+                                var remoteFile = _remotePath + "/" + correctRemoteCase;
                                 if (client2.Exists(remoteFile))
                                 {
                                     client2.DeleteFile(remoteFile);
@@ -1697,6 +1833,7 @@ public class FtpService
 
                     var filesToDownload = LastComparisonResult?.NewerRemoteFiles ?? new();
                     filesToDownload.AddRange(LastComparisonResult?.RemoteOnlyFiles ?? new());
+                    var remoteFilenameMap = LastComparisonResult?.RemoteFilenameMap ?? new();
 
                     var totalFiles = filesToDownload.Count;
                     var downloadedCount = 0;
@@ -1707,8 +1844,14 @@ public class FtpService
                     {
                         try
                         {
+                            // Use RemoteFilenameMap to get the correct remote filename case
+                            var normalizedPath = relativeFile.ToLowerInvariant();
+                            var correctRemoteCase = remoteFilenameMap.ContainsKey(normalizedPath) 
+                                ? remoteFilenameMap[normalizedPath] 
+                                : relativeFile;
+                            
                             var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
-                            var remoteFile = _remotePath + "/" + relativeFile;
+                            var remoteFile = _remotePath + "/" + correctRemoteCase;
 
                             // Ensure local directory exists
                             var localDir = Path.GetDirectoryName(localFile);
@@ -1717,14 +1860,24 @@ public class FtpService
                                 Directory.CreateDirectory(localDir);
                             }
 
+                            // Get remote file info before downloading to preserve timestamp
+                            var remoteFileInfo = client.GetAttributes(remoteFile);
+                            
                             // Download the file
                             using (var fileStream = File.Create(localFile))
                             {
                                 client.DownloadFile(remoteFile, fileStream);
-                                downloadedCount++;
-                                progressCallback?.Invoke($"Downloaded {downloadedCount}/{totalFiles}: {relativeFile}");
-                                Log($"Downloaded: {relativeFile}");
                             }
+                            
+                            // Preserve the remote file's modification timestamp on the local file AFTER stream is closed
+                            if (remoteFileInfo != null && remoteFileInfo.LastWriteTime != DateTime.MinValue)
+                            {
+                                File.SetLastWriteTimeUtc(localFile, remoteFileInfo.LastWriteTimeUtc);
+                            }
+                            
+                            downloadedCount++;
+                            progressCallback?.Invoke($"Downloaded {downloadedCount}/{totalFiles}: {relativeFile}");
+                            Log($"Downloaded: {relativeFile}");
                         }
                         catch (Exception ex)
                         {
@@ -1740,6 +1893,7 @@ public class FtpService
 
                 // Delete files that only exist locally (mirror sync)
                 var filesToDelete = LastComparisonResult?.LocalOnlyFiles ?? new();
+                var localFilenameMapForDeletion = LastComparisonResult?.LocalFilenameMap ?? new();
                 if (filesToDelete.Count > 0)
                 {
                     Log($"Deleting {filesToDelete.Count} local-only files to mirror remote");
@@ -1748,7 +1902,19 @@ public class FtpService
                     {
                         try
                         {
-                            var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
+                            if (string.IsNullOrEmpty(relativeFile))
+                            {
+                                Log($"Warning: Skipping empty filename in local-only files list");
+                                continue;
+                            }
+                            
+                            // Use LocalFilenameMap to get the correct local filename case
+                            var normalizedPath = relativeFile.ToLowerInvariant();
+                            var correctLocalCase = localFilenameMapForDeletion.ContainsKey(normalizedPath) 
+                                ? localFilenameMapForDeletion[normalizedPath] 
+                                : relativeFile;
+                            
+                            var localFile = Path.Combine(_localPath, correctLocalCase.Replace('/', Path.DirectorySeparatorChar));
                             if (File.Exists(localFile))
                             {
                                 File.Delete(localFile);
