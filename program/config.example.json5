@@ -3,12 +3,12 @@
     {
       name: "project 1", // As displayed in the projects list
       localPath: "D:\\dev\\project1", // Full path to your local project folder
-      ftpRemotePath: "/work/dev/project1", // Remote path on the FTP server
+      remotePath: "/work/dev/project1", // Remote path on the FTP server
     },
     {
       name: "project 2",
       localPath: "D:\\architecture\\project2",
-      ftpRemotePath: "/work/project2",
+      remotePath: "/work/project2",
     },
   ],
 

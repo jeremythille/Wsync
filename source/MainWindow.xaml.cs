@@ -36,6 +36,10 @@ public partial class MainWindow : Window
         InitializeSpinner();
         RecommendationText.Text = "Select a project and click Refresh to compare files.";
         LoadProjects();
+        
+        // Set window title with build date/time
+        var buildTime = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        this.Title = $"Wsync - Build {buildTime:yyyy-MM-dd HH:mm}";
     }
 
     private void InitializeSpinner()
@@ -636,8 +640,8 @@ public partial class MainWindow : Window
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
 
-            // Show completion message
-            UpdateStatus($"Sync completed successfully!", "", "");
+            // Show completion message (include timestamp)
+            UpdateStatus($"Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;

@@ -17,7 +17,7 @@ public class ProjectConfig
     [Newtonsoft.Json.JsonProperty("localPath")]
     public string LocalPath { get; set; } = string.Empty;
     
-    [Newtonsoft.Json.JsonProperty("ftpRemotePath")]
+    [Newtonsoft.Json.JsonProperty("remotePath")]
     public string FtpRemotePath { get; set; } = string.Empty;
 
     /// <summary>
@@ -33,7 +33,7 @@ public class ProjectConfig
             return $"Project '{Name}': 'localPath' is missing or empty from config.json5 - See full log in wsync.log";
 
         if (string.IsNullOrWhiteSpace(FtpRemotePath))
-            return $"Project '{Name}': 'ftpRemotePath' is missing or empty from config.json5 - See full log in wsync.log";
+            return $"Project '{Name}': 'remotePath' is missing or empty from config.json5 - See full log in wsync.log";
         
         if (!Directory.Exists(LocalPath))
             return $"Project '{Name}': Local path does not exist: {LocalPath} - See full log in wsync.log";
