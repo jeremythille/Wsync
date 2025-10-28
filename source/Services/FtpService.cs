@@ -700,8 +700,22 @@ public class FtpService
     {
         var files = new Dictionary<string, FileMetadata>();
 
-        using (var client = new SftpClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
+        // Create connection info with optimized settings for packet handling
+        var connectionInfo = new Renci.SshNet.ConnectionInfo(
+            _ftpConfig.Host,
+            _ftpConfig.Port,
+            _ftpConfig.Username,
+            new Renci.SshNet.PasswordAuthenticationMethod(_ftpConfig.Username, _ftpConfig.Password))
         {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+
+        using (var client = new SftpClient(connectionInfo))
+        {
+            // Note: The "Packet too big (68KB limit)" error was from SSH command scripts with 1000+ files.
+            // Fixed by chunking SSH stat commands into 50-file batches below.
+            // BufferSize here is for SFTP file transfers, not the issue.
+            
             Log($"SFTP: Connecting to {_ftpConfig.Host}:{_ftpConfig.Port} as {_ftpConfig.Username}");
             try
             {
@@ -746,63 +760,74 @@ public class FtpService
             Log($"SFTP: Found {files.Count} remote files");
         }
 
-        // Now get accurate UTC timestamps via SSH using a single batch command
+        // Now get accurate UTC timestamps via SSH using chunked batch commands
+        // Split into chunks to avoid exceeding server's 68KB packet limit
         Log("SSH: Getting accurate UTC timestamps for remote files via stat");
         using (var sshClient = new SshClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
         {
             await Task.Run(() => sshClient.Connect(), cancellationToken);
             try
             {
-                // Create a temporary script that will be piped to bash
-                // This avoids escaping issues and runs all stat commands in one SSH session
-                var scriptLines = new List<string> { "cd " + _remotePath };
-                foreach (var fileKey in files.Keys)
-                {
-                    var filePath = Path.Combine(_remotePath, fileKey).Replace('\\', '/').Replace("\"", "\\\"");
-                    scriptLines.Add($"stat -c '%Y' \"{filePath}\" 2>/dev/null || stat -f '%m' \"{filePath}\" 2>/dev/null || echo 0");
-                }
+                const int FilesPerBatch = 50;  // Conservative limit to stay well under 68KB
+                var fileList = files.Keys.ToList();
+                int updated = 0;
                 
-                var script = string.Join("; ", scriptLines);
-                var result = sshClient.RunCommand(script);
-                
-                if (result.ExitStatus == 0)
+                // Process files in batches to avoid packet size limit
+                for (int batchStart = 0; batchStart < fileList.Count; batchStart += FilesPerBatch)
                 {
-                    var timestamps = result.Result.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                    int updated = 0;
-                    int index = 0;
+                    var batchEnd = Math.Min(batchStart + FilesPerBatch, fileList.Count);
+                    var batchFiles = fileList.GetRange(batchStart, batchEnd - batchStart);
                     
-                    foreach (var fileKey in files.Keys)
+                    // Create script for this batch
+                    var scriptLines = new List<string> { "cd " + _remotePath };
+                    foreach (var fileKey in batchFiles)
                     {
-                        if (index < timestamps.Length && long.TryParse(timestamps[index].Trim(), out var unixTimestamp) && unixTimestamp > 0)
-                        {
-                            var utcTime = DateTime.UnixEpoch.AddSeconds(unixTimestamp);
-                            files[fileKey].Timestamp = utcTime;
-                            updated++;
-                        }
-                        index++;
+                        var filePath = Path.Combine(_remotePath, fileKey).Replace('\\', '/').Replace("\"", "\\\"");
+                        scriptLines.Add($"stat -c '%Y' \"{filePath}\" 2>/dev/null || stat -f '%m' \"{filePath}\" 2>/dev/null || echo 0");
                     }
-                    Log($"SSH: Updated {updated}/{files.Count} file timestamps to UTC");
-                }
-                else
-                {
-                    Log($"SSH: Batch stat command failed (exit {result.ExitStatus}), falling back to per-file queries");
-                    // Fallback to per-file if batch fails
-                    int updated = 0;
-                    foreach (var fileKey in files.Keys.ToList())
+                    
+                    var script = string.Join("; ", scriptLines);
+                    Log($"SSH: Processing batch {(batchStart / FilesPerBatch) + 1}: {batchFiles.Count} files, script size {script.Length} bytes");
+                    
+                    var result = sshClient.RunCommand(script);
+                    
+                    if (result.ExitStatus == 0)
                     {
-                        var filePath = Path.Combine(_remotePath, fileKey).Replace('\\', '/');
-                        var cmd = $"stat -c %Y \"{filePath}\" 2>/dev/null || stat -f %m \"{filePath}\" 2>/dev/null";
-                        var singleResult = sshClient.RunCommand(cmd);
+                        var timestamps = result.Result.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                        int index = 0;
                         
-                        if (singleResult.ExitStatus == 0 && long.TryParse(singleResult.Result.Trim(), out var unixTimestamp))
+                        foreach (var fileKey in batchFiles)
                         {
-                            var utcTime = DateTime.UnixEpoch.AddSeconds(unixTimestamp);
-                            files[fileKey].Timestamp = utcTime;
-                            updated++;
+                            if (index < timestamps.Length && long.TryParse(timestamps[index].Trim(), out var unixTimestamp) && unixTimestamp > 0)
+                            {
+                                var utcTime = DateTime.UnixEpoch.AddSeconds(unixTimestamp);
+                                files[fileKey].Timestamp = utcTime;
+                                updated++;
+                            }
+                            index++;
                         }
                     }
-                    Log($"SSH: Fallback updated {updated}/{files.Count} file timestamps to UTC");
+                    else
+                    {
+                        Log($"SSH: Batch {(batchStart / FilesPerBatch) + 1} failed (exit {result.ExitStatus}), falling back to per-file queries for this batch");
+                        // Fallback to per-file for this batch only
+                        foreach (var fileKey in batchFiles)
+                        {
+                            var filePath = Path.Combine(_remotePath, fileKey).Replace('\\', '/');
+                            var cmd = $"stat -c %Y \"{filePath}\" 2>/dev/null || stat -f %m \"{filePath}\" 2>/dev/null";
+                            var singleResult = sshClient.RunCommand(cmd);
+                            
+                            if (singleResult.ExitStatus == 0 && long.TryParse(singleResult.Result.Trim(), out var unixTimestamp))
+                            {
+                                var utcTime = DateTime.UnixEpoch.AddSeconds(unixTimestamp);
+                                files[fileKey].Timestamp = utcTime;
+                                updated++;
+                            }
+                        }
+                    }
                 }
+                
+                Log($"SSH: Updated {updated}/{files.Count} file timestamps to UTC");
             }
             finally
             {
@@ -1119,7 +1144,17 @@ public class FtpService
     {
         try
         {
-            using (var client = new SftpClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
+            // Create connection info with optimized buffer sizes
+            var connectionInfo = new Renci.SshNet.ConnectionInfo(
+                _ftpConfig.Host,
+                _ftpConfig.Port,
+                _ftpConfig.Username,
+                new Renci.SshNet.PasswordAuthenticationMethod(_ftpConfig.Username, _ftpConfig.Password))
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+
+            using (var client = new SftpClient(connectionInfo))
             {
                 Log("Connecting to SFTP server for upload...");
                 client.Connect();
@@ -1188,7 +1223,17 @@ public class FtpService
     {
         try
         {
-            using (var client = new SftpClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
+            // Create connection info with optimized buffer sizes
+            var connectionInfo = new Renci.SshNet.ConnectionInfo(
+                _ftpConfig.Host,
+                _ftpConfig.Port,
+                _ftpConfig.Username,
+                new Renci.SshNet.PasswordAuthenticationMethod(_ftpConfig.Username, _ftpConfig.Password))
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+
+            using (var client = new SftpClient(connectionInfo))
             {
                 Log("Connecting to SFTP server for download...");
                 client.Connect();

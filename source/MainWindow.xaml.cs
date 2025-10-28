@@ -91,7 +91,7 @@ public partial class MainWindow : Window
         }
         
         // Load the analysis mode from state
-        LoadAnalysisMode(AnalysisMode.Full);
+        LoadAnalysisMode(AnalysisMode.Quick);
     }
     
     private void LoadAnalysisMode(AnalysisMode mode)
