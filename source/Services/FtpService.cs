@@ -1250,10 +1250,10 @@ public class FtpService
             else
             {
                 localOnly++;
-                localOnlyFiles.Add(remoteKey);  // Use remote key (or local key if no remote) - use remoteKey if available, otherwise localFile.Key
+                localOnlyFiles.Add(localFile.Key);  // Use local key since file doesn't exist on remote
                 if (string.IsNullOrEmpty(localExample))
                 {
-                    localExample = $"Local only: {remoteKey ?? localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                    localExample = $"Local only: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
                 }
             }
         }
