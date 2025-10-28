@@ -72,9 +72,15 @@ public class ConfigService
                     _config = jObject.ToObject<AppConfig>(JsonSerializer.Create()) ?? new AppConfig();
                     Log($"Loaded {_config.Projects.Count} projects");
                     
+                    // Validate all projects
                     foreach (var proj in _config.Projects)
                     {
                         Log($"Project: {proj.Name}");
+                        var validationError = proj.Validate();
+                        if (validationError != null)
+                        {
+                            Log($"  WARNING: {validationError}");
+                        }
                     }
                 }
                 catch (JsonReaderException jex)

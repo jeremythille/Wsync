@@ -42,11 +42,13 @@ public partial class MainWindow : Window
     {
         _spinnerTimer = new DispatcherTimer();
         _spinnerTimer.Interval = TimeSpan.FromMilliseconds(80);
-        _spinnerTimer.Tick += (s, e) =>
-        {
-            SpinnerText.Text = _spinnerFrames[_spinnerIndex % _spinnerFrames.Length];
-            _spinnerIndex++;
-        };
+        _spinnerTimer.Tick += SpinnerTick;
+    }
+
+    private void SpinnerTick(object? sender, EventArgs e)
+    {
+        SpinnerText.Text = _spinnerFrames[_spinnerIndex % _spinnerFrames.Length];
+        _spinnerIndex++;
     }
 
     private void LoadProjects()
@@ -126,6 +128,22 @@ public partial class MainWindow : Window
         _analysisCancellationToken = new CancellationTokenSource();
 
         var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
+        
+        // Validate project configuration
+        var validationError = selectedProject.Validate();
+        if (validationError != null)
+        {
+            _spinnerTimer?.Stop();
+            LoadingSpinner.Visibility = Visibility.Collapsed;
+            AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            UpdateStatus($"❌ Configuration Error: {validationError}", "", "");
+            ResetButtonColors();
+            SyncLeftButton.IsEnabled = true;
+            SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
+            return;
+        }
+
         var config = _configService.GetConfig();
         var ftpConfig = config.Ftp;
         var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
@@ -154,7 +172,7 @@ public partial class MainWindow : Window
             ProjectComboBox.IsEnabled = false;
 
             // Run analysis on thread pool to avoid blocking UI
-            var recommendation = await Task.Run(async () => await _ftpService.GetSyncRecommendationAsync(_analysisCancellationToken.Token));
+            var recommendation = await Task.Run(RunAnalysisAsync);
 
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
@@ -199,34 +217,38 @@ public partial class MainWindow : Window
 
     private void UpdateAnalysisStatus(string message)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.Invoke(UpdateAnalysisStatusDispatcher, message);
+    }
+
+    private void UpdateAnalysisStatusDispatcher(string message)
+    {
+        // Append new message to existing status, scrolling to bottom
+        if (RecommendationText.Text.Length > 0)
         {
-            // Append new message to existing status, scrolling to bottom
-            if (RecommendationText.Text.Length > 0)
-            {
-                RecommendationText.Text += Environment.NewLine + message;
-            }
-            else
-            {
-                RecommendationText.Text = message;
-            }
-            
-            // Auto-scroll to bottom to show latest message
-            RecommendationText.CaretIndex = RecommendationText.Text.Length;
-            RecommendationText.ScrollToEnd();
-        });
+            RecommendationText.Text += Environment.NewLine + message;
+        }
+        else
+        {
+            RecommendationText.Text = message;
+        }
+        
+        // Auto-scroll to bottom to show latest message
+        RecommendationText.CaretIndex = RecommendationText.Text.Length;
+        RecommendationText.ScrollToEnd();
     }
 
     private void UpdateStatus(string message, string recommendation, string advice)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.Invoke(UpdateStatusDispatcher, message, advice);
+    }
+
+    private void UpdateStatusDispatcher(string message, string advice)
+    {
+        RecommendationText.Text = message;
+        if (!string.IsNullOrEmpty(advice))
         {
-            RecommendationText.Text = message;
-            if (!string.IsNullOrEmpty(advice))
-            {
-                RecommendationText.Text += $"\n\n{advice}";
-            }
-        });
+            RecommendationText.Text += $"\n\n{advice}";
+        }
     }
 
     private void UpdateRecommendationText(SyncRecommendation recommendation)
@@ -271,23 +293,23 @@ public partial class MainWindow : Window
         switch (recommendation)
         {
             case SyncRecommendation.SyncToLocal:
-                RecommendationText.Text = $"{header}✓ RECOMMENDATION: Sync to Local (FTP → Desktop)\n\n{fileListText}";
+                RecommendationText.Text = $"{header}✓ RECOMMENDATION: Sync to Local (FTP → Desktop)\n\n{fileListText}\n\nSee full log in wsync.log";
                 break;
 
             case SyncRecommendation.SyncToFtp:
-                RecommendationText.Text = $"{header}✓ RECOMMENDATION: Sync to FTP (Desktop → FTP)\n\n{fileListText}";
+                RecommendationText.Text = $"{header}✓ RECOMMENDATION: Sync to FTP (Desktop → FTP)\n\n{fileListText}\n\nSee full log in wsync.log";
                 break;
 
             case SyncRecommendation.BothNewer:
-                RecommendationText.Text = $"{header}⚠ CONFLICT: Files on both sides have updates\n\n{fileListText}";
+                RecommendationText.Text = $"{header}⚠ CONFLICT: Files on both sides have updates\n\n{fileListText}\n\nSee full log in wsync.log";
                 break;
 
             case SyncRecommendation.InSync:
-                RecommendationText.Text = $"{header}✓ All files are synchronized\n\nNo sync needed.";
+                RecommendationText.Text = $"{header}✓ All files are synchronized\n\nNo sync needed.\n\nSee full log in wsync.log";
                 break;
 
             case SyncRecommendation.Unknown:
-                RecommendationText.Text = $"{header}⚠ Could not determine sync direction\n\nPlease check your configuration.";
+                RecommendationText.Text = $"{header}⚠ Could not determine sync direction\n\nPlease check your configuration.\n\nSee full log in wsync.log";
                 break;
         }
     }
@@ -686,5 +708,14 @@ public partial class MainWindow : Window
         {
             _ = AnalyzeSyncStatusAsync();
         }
+    }
+
+    private async Task<SyncRecommendation> RunAnalysisAsync()
+    {
+        if (_ftpService != null)
+        {
+            return await _ftpService.GetSyncRecommendationAsync(_analysisCancellationToken?.Token ?? CancellationToken.None);
+        }
+        return SyncRecommendation.Unknown;
     }
 }

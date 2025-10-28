@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace Wsync.Models;
 
 public enum AnalysisMode
@@ -17,6 +19,27 @@ public class ProjectConfig
     
     [Newtonsoft.Json.JsonProperty("ftpRemotePath")]
     public string FtpRemotePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Validates that this project configuration has all required fields.
+    /// Returns null if valid, or an error message if invalid.
+    /// </summary>
+    public string? Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Name))
+            return "Project name is missing or empty in config.json5 - See full log in wsync.log";
+        
+        if (string.IsNullOrWhiteSpace(LocalPath))
+            return $"Project '{Name}': 'localPath' is missing or empty from config.json5 - See full log in wsync.log";
+
+        if (string.IsNullOrWhiteSpace(FtpRemotePath))
+            return $"Project '{Name}': 'ftpRemotePath' is missing or empty from config.json5 - See full log in wsync.log";
+        
+        if (!Directory.Exists(LocalPath))
+            return $"Project '{Name}': Local path does not exist: {LocalPath} - See full log in wsync.log";
+        
+        return null; // Valid
+    }
 }
 
 public class FtpConnectionConfig
