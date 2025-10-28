@@ -28,6 +28,10 @@ public partial class MainWindow : Window
     private DateTime _analysisStartTime = DateTime.MinValue;
     private CancellationTokenSource? _analysisCancellationToken;
     private bool _pendingSyncToFtp = false;  // Track which sync action is pending confirmation
+    private DateTime _lastUiUpdateTime = DateTime.MinValue;  // Throttle UI updates
+    private const int UiUpdateThrottleMs = 100;  // Update UI max once every 100ms
+    private int _pendingUiUpdates = 0;  // Track updates waiting in dispatcher queue
+    private const int MaxPendingUpdates = 5;  // Max queued updates before skipping
 
     public MainWindow()
     {
@@ -140,6 +144,7 @@ public partial class MainWindow : Window
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
             AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            System.Diagnostics.Debug.WriteLine("[MainWindow] AbortAnalysisButton -> Collapsed (validation error)");
             UpdateStatus($"❌ Configuration Error: {validationError}", "", "");
             ResetButtonColors();
             SyncLeftButton.IsEnabled = true;
@@ -162,6 +167,8 @@ public partial class MainWindow : Window
             _spinnerTimer?.Start();
             LoadingSpinner.Visibility = Visibility.Visible;
             AbortAnalysisButton.Visibility = Visibility.Visible;
+            AbortAnalysisButton.UpdateLayout();  // Force WPF to render the button
+            System.Diagnostics.Debug.WriteLine("[MainWindow] AbortAnalysisButton set to Visible");
             UpdateStatus("Analyzing files...", "", "");
             
             _analysisStartTime = DateTime.Now;
@@ -174,13 +181,24 @@ public partial class MainWindow : Window
             SyncLeftButton.IsEnabled = false;
             SyncRightButton.IsEnabled = false;
             ProjectComboBox.IsEnabled = false;
+            ModeComboBox.IsEnabled = false;  // Disable mode changes during analysis
 
             // Run analysis on thread pool to avoid blocking UI
             var recommendation = await Task.Run(RunAnalysisAsync);
 
             _spinnerTimer?.Stop();
+            
+            // Ensure button is visible for at least 1 second so user can see it and click if needed
+            var analysisEndTime = DateTime.Now;
+            var elapsedTime = analysisEndTime - _analysisStartTime;
+            if (elapsedTime.TotalSeconds < 1.0)
+            {
+                await Task.Delay((int)(1000 - elapsedTime.TotalMilliseconds));
+            }
+            
             LoadingSpinner.Visibility = Visibility.Collapsed;
             AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            System.Diagnostics.Debug.WriteLine("[MainWindow] AbortAnalysisButton set to Collapsed (analysis complete)");
             _lastCheckTime = DateTime.Now;
 
             // Show the checked timestamp immediately after analysis completes
@@ -193,6 +211,7 @@ public partial class MainWindow : Window
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;
+            ModeComboBox.IsEnabled = true;  // Re-enable mode selection
         }
         catch (OperationCanceledException)
         {
@@ -200,10 +219,12 @@ public partial class MainWindow : Window
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
             AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            System.Diagnostics.Debug.WriteLine("[MainWindow] AbortAnalysisButton -> Collapsed (canceled)");
             UpdateStatus("Analysis canceled", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;
+            ModeComboBox.IsEnabled = true;
         }
         catch (Exception ex)
         {
@@ -211,22 +232,45 @@ public partial class MainWindow : Window
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
             AbortAnalysisButton.Visibility = Visibility.Collapsed;
+            System.Diagnostics.Debug.WriteLine("[MainWindow] AbortAnalysisButton -> Collapsed (exception)");
             UpdateStatus($"Error: {ex.Message}", "", "");
             ResetButtonColors();
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;
+            ModeComboBox.IsEnabled = true;
         }
     }
 
     private void UpdateAnalysisStatus(string message)
     {
-        Dispatcher.Invoke(UpdateAnalysisStatusDispatcher, message);
+        // Skip if too many updates are already queued
+        if (_pendingUiUpdates >= MaxPendingUpdates)
+        {
+            return;
+        }
+        
+        _pendingUiUpdates++;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _pendingUiUpdates--;
+            UpdateAnalysisStatusDispatcher(message);
+        }));
     }
 
     private void UpdateAnalysisStatusDispatcher(string message)
     {
-        // Append new message to existing status, scrolling to bottom
+        // Throttle UI updates to avoid blocking the UI thread
+        var now = DateTime.Now;
+        if ((now - _lastUiUpdateTime).TotalMilliseconds < UiUpdateThrottleMs)
+        {
+            return;  // Skip this update, it's too soon
+        }
+        _lastUiUpdateTime = now;
+        
+        // Keep only last 50 lines in the UI
+        const int MaxLines = 50;
+        
         if (RecommendationText.Text.Length > 0)
         {
             RecommendationText.Text += Environment.NewLine + message;
@@ -234,6 +278,13 @@ public partial class MainWindow : Window
         else
         {
             RecommendationText.Text = message;
+        }
+        
+        // Trim to last 50 lines
+        var lines = RecommendationText.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+        if (lines.Length > MaxLines)
+        {
+            RecommendationText.Text = string.Join(Environment.NewLine, lines.TakeLast(MaxLines));
         }
         
         // Auto-scroll to bottom to show latest message

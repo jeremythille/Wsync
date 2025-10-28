@@ -120,8 +120,11 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             
+            <!-- Loading Spinner for analysis -->
+            <Grid Grid.Column="0" x:Name="AnalysisSpinner" Height="20" VerticalAlignment="Center" Visibility="Collapsed">
+                <TextBlock x:Name="AnalysisSpinnerText" Text="⠙" FontSize="14" Foreground="#0078D4" VerticalAlignment="Center"/>
+            </Grid>
 
-            
             <ComboBox Grid.Column="1"
                       x:Name="ModeComboBox"
                       Height="32"

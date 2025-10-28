@@ -60,6 +60,10 @@ public class FtpService
     private readonly string _remotePath;
     private readonly AnalysisMode _analysisMode;
     private Action<string>? _statusCallback;
+    private readonly LinkedList<string> _uiLogBuffer = new();  // Circular buffer for UI logs (max 50)
+    private const int MaxUiLogs = 50;
+    private DateTime _lastStatusCallbackTime = DateTime.MinValue;  // Throttle status callbacks
+    private const int StatusCallbackThrottleMs = 100;  // Max frequency of status callbacks to UI
     public ComparisonResult? LastComparisonResult { get; private set; }
     private SshClient? _sshClientCache; // Reusable SSH client for hash computation
     private readonly List<string> _excludedExtensions;
@@ -159,7 +163,7 @@ public class FtpService
                         Recommendation = SyncRecommendation.Unknown,
                         Error = errorMsg
                     };
-                    _statusCallback?.Invoke(errorMsg);
+                    UpdateStatus(errorMsg);
                     return SyncRecommendation.Unknown;
                 }
                 
@@ -167,7 +171,7 @@ public class FtpService
             }
 
             // Get local files
-            _statusCallback?.Invoke("Scanning local files...");
+            UpdateStatus("Scanning local files...");
             cancellationToken.ThrowIfCancellationRequested();
             
             // Check if local path exists before trying to scan
@@ -175,7 +179,7 @@ public class FtpService
             {
                 var errorMsg = $"Local folder doesn't exist: {_localPath}";
                 Log(errorMsg);
-                _statusCallback?.Invoke(errorMsg);
+                UpdateStatus(errorMsg);
                 LastComparisonResult = new ComparisonResult
                 {
                     Recommendation = SyncRecommendation.Unknown,
@@ -184,11 +188,11 @@ public class FtpService
                 return SyncRecommendation.Unknown;
             }
 
-            var localFiles = GetLocalFileMetadata();
+            var localFiles = await GetLocalFileMetadataAsync();
             if (localFiles.Count == 0)
             {
                 Log("No local files found");
-                _statusCallback?.Invoke("No local files found");
+                UpdateStatus("No local files found");
                 LastComparisonResult = new ComparisonResult
                 {
                     Recommendation = SyncRecommendation.Unknown,
@@ -197,7 +201,7 @@ public class FtpService
                 return SyncRecommendation.Unknown;
             }
 
-            _statusCallback?.Invoke($"Found {localFiles.Count} local files. Connecting to FTP...");
+            UpdateStatus($"Found {localFiles.Count} local files. Connecting to FTP...");
             cancellationToken.ThrowIfCancellationRequested();
 
             // Connect to FTP and get remote files
@@ -205,20 +209,20 @@ public class FtpService
             {
                 var remoteFiles = await GetRemoteFileMetadataAsync(cancellationToken);
                 
-                _statusCallback?.Invoke($"Found {remoteFiles.Count} remote files. Comparing...");
+                UpdateStatus($"Found {remoteFiles.Count} remote files. Comparing...");
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // Compare using timestamp and size
-                var result = CompareFileMetadata(localFiles, remoteFiles, cancellationToken);
+                var result = await CompareFileMetadataAsync(localFiles, remoteFiles, cancellationToken);
                 LastComparisonResult = result;
-                _statusCallback?.Invoke("Analysis complete");
+                UpdateStatus("Analysis complete");
                 return result.Recommendation;
             }
             catch (Exception ftpEx)
             {
                 Log($"FTP connection error: {ftpEx.Message}");
                 var errorMsg = $"Couldn't connect to FTP: {ftpEx.Message}";
-                _statusCallback?.Invoke(errorMsg);
+                UpdateStatus(errorMsg);
                 
                 LastComparisonResult = new ComparisonResult
                 {
@@ -241,12 +245,53 @@ public class FtpService
         catch (Exception ex)
         {
             Log($"Error getting sync recommendation: {ex.Message}");
-            _statusCallback?.Invoke($"Error: {ex.Message}");
+            UpdateStatus($"Error: {ex.Message}");
             LastComparisonResult = new ComparisonResult
             {
                 Recommendation = SyncRecommendation.Unknown,
                 Error = ex.Message
             };
+            return SyncRecommendation.Unknown;
+        }
+    }
+
+    /// <summary>
+    /// Forces a full analysis regardless of the configured analysis mode
+    /// Used by sync operations to ensure all files are scanned
+    /// </summary>
+    private async Task<SyncRecommendation> GetFullAnalysisAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var localFiles = await GetLocalFileMetadataAsync();
+            if (localFiles.Count == 0)
+            {
+                Log("No local files found for full analysis");
+                return SyncRecommendation.Unknown;
+            }
+
+            try
+            {
+                var remoteFiles = await GetRemoteFileMetadataAsync(cancellationToken);
+                
+                // Compare using Full mode (all files)
+                var result = await CompareFileMetadataAsync(localFiles, remoteFiles, cancellationToken, AnalysisMode.Full);
+                LastComparisonResult = result;
+                return result.Recommendation;
+            }
+            catch (Exception ftpEx)
+            {
+                Log($"FTP connection error during full analysis: {ftpEx.Message}");
+                return SyncRecommendation.Unknown;
+            }
+            finally
+            {
+                CleanupSshConnection();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error during full analysis: {ex.Message}");
             return SyncRecommendation.Unknown;
         }
     }
@@ -258,7 +303,7 @@ public class FtpService
     {
         try
         {
-            _statusCallback?.Invoke("Getting local git commit info...");
+            UpdateStatus("Getting local git commit info...");
             cancellationToken.ThrowIfCancellationRequested();
 
             // Get local commit info
@@ -272,11 +317,11 @@ public class FtpService
                     Recommendation = SyncRecommendation.Unknown,
                     Error = errorMsg
                 };
-                _statusCallback?.Invoke(errorMsg);
+                UpdateStatus(errorMsg);
                 return SyncRecommendation.Unknown;
             }
 
-            _statusCallback?.Invoke("Getting remote git commit info...");
+            UpdateStatus("Getting remote git commit info...");
             cancellationToken.ThrowIfCancellationRequested();
 
             // Get remote commit info via SSH
@@ -290,7 +335,7 @@ public class FtpService
                     Recommendation = SyncRecommendation.Unknown,
                     Error = errorMsg
                 };
-                _statusCallback?.Invoke(errorMsg);
+                UpdateStatus(errorMsg);
                 return SyncRecommendation.Unknown;
             }
 
@@ -334,13 +379,13 @@ public class FtpService
             }
 
             LastComparisonResult = result;
-            _statusCallback?.Invoke("Git comparison complete");
+            UpdateStatus("Git comparison complete");
             return result.Recommendation;
         }
         catch (Exception ex)
         {
             Log($"Error comparing git commits: {ex.Message}");
-            _statusCallback?.Invoke($"Error: {ex.Message}");
+            UpdateStatus($"Error: {ex.Message}");
             LastComparisonResult = new ComparisonResult
             {
                 Recommendation = SyncRecommendation.Unknown,
@@ -607,6 +652,104 @@ public class FtpService
     {
         // Connection stays in pool for reuse - already released semaphore in GetSshConnectionAsync finally block
         // Log($"SSH: Connection returned to pool for reuse (pool size: {_sshConnectionPool.Count})");
+    }
+
+    /// <summary>
+    /// Async version that yields to UI thread while scanning local files
+    /// </summary>
+    private async Task<Dictionary<string, FileMetadata>> GetLocalFileMetadataAsync()
+    {
+        var files = new Dictionary<string, FileMetadata>();
+
+        try
+        {
+            var dir = new DirectoryInfo(_localPath);
+            int maxDepth = _analysisMode == AnalysisMode.Quick ? MaxDepthFastMode : MaxDepthNormalMode;
+            var fileInfos = await GetFilesRecursiveAsync(dir, currentDepth: 0, maxDepth: maxDepth);
+
+            if (_analysisMode == AnalysisMode.Quick && fileInfos.Count > 0)
+            {
+                Log($"Quick mode enabled: Analyzing only {fileInfos.Count} files (root + 1 level deep)");
+            }
+
+            // Collect file metadata (size and timestamp only, no hashing)
+            int filesProcessed = 0;
+            foreach (var file in fileInfos)
+            {
+                // Yield every 100 files
+                if (filesProcessed > 0 && filesProcessed % 100 == 0)
+                {
+                    await Task.Delay(0);
+                }
+                filesProcessed++;
+
+                // Skip files with excluded extensions
+                if (IsFileExcluded(file.Name))
+                {
+                    continue;
+                }
+
+                // Use the relative path from localPath as the key, normalized to forward slashes for comparison
+                var relativePath = Path.GetRelativePath(_localPath, file.FullName);
+                var normalizedPath = relativePath.Replace('\\', '/');
+                
+                files[normalizedPath] = new FileMetadata 
+                { 
+                    Timestamp = file.LastWriteTimeUtc,  // Always use UTC for consistent comparison
+                    Size = file.Length
+                };
+            }
+
+            Log($"Found {files.Count} local files");
+        }
+        catch (Exception ex)
+        {
+            Log($"Error reading local files: {ex.Message}");
+        }
+
+        return files;
+    }
+
+    /// <summary>
+    /// Recursively gets files while skipping ignored folders - async version with yields
+    /// </summary>
+    private async Task<List<FileInfo>> GetFilesRecursiveAsync(DirectoryInfo directory, int currentDepth = 0, int maxDepth = int.MaxValue)
+    {
+        var files = new List<FileInfo>();
+
+        try
+        {
+            // Yield to thread pool periodically
+            if (currentDepth > 0 && currentDepth % 5 == 0)
+            {
+                await Task.Delay(0);
+            }
+
+            // Get files in current directory
+            files.AddRange(directory.GetFiles());
+
+            // Stop recursing if we've reached max depth
+            if (currentDepth >= maxDepth)
+            {
+                return files;
+            }
+
+            // Get subdirectories and recurse, but skip ignored ones
+            var subdirs = directory.GetDirectories();
+            foreach (var subdir in subdirs)
+            {
+                if (!_ignoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    files.AddRange(await GetFilesRecursiveAsync(subdir, currentDepth + 1, maxDepth));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error scanning directory {directory.FullName}: {ex.Message}");
+        }
+
+        return files;
     }
 
     /// <summary>
@@ -913,8 +1056,6 @@ public class FtpService
     /// Compares local and remote file timestamps to determine sync direction
     /// </summary>
     /// <summary>
-
-    /// <summary>
     /// Computes the MD5 hash of a file on the local filesystem
     /// </summary>
     /// <summary>
@@ -927,11 +1068,232 @@ public class FtpService
     }
 
     /// <summary>
+    /// Async wrapper for comparing file metadata - yields to UI thread periodically
+    /// </summary>
+    private async Task<ComparisonResult> CompareFileMetadataAsync(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken = default)
+    {
+        return await CompareFileMetadataAsync(localFiles, remoteFiles, cancellationToken, _analysisMode);
+    }
+
+    /// <summary>
+    /// Async version that yields every 100 files to allow UI updates
+    /// </summary>
+    private async Task<ComparisonResult> CompareFileMetadataAsync(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken, AnalysisMode analysisMode)
+    {
+        const int DecisionThreshold = 3;
+        const int YieldIntervalFiles = 100; // Yield to UI after comparing N files
+        
+        var newerLocal = 0;
+        var newerRemote = 0;
+        var localOnly = 0;
+        var remoteOnly = 0;
+        string localExample = "";
+        string remoteExample = "";
+
+        var newerLocalFiles = new List<string>();
+        var newerRemoteFiles = new List<string>();
+        var localOnlyFiles = new List<string>();
+        var remoteOnlyFiles = new List<string>();
+        
+        bool decidedEarly = false;
+        SyncRecommendation? earlyDecision = null;
+        int filesProcessed = 0;
+
+        // Check all files that exist locally
+        foreach (var localFile in localFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            // Yield to UI thread periodically
+            if (filesProcessed > 0 && filesProcessed % YieldIntervalFiles == 0)
+            {
+                await Task.Delay(0);  // Yield to thread pool / UI scheduler
+            }
+            filesProcessed++;
+            
+            if (remoteFiles.TryGetValue(localFile.Key, out var remoteMetadata))
+            {
+                // File exists on both sides
+                var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
+                var sizeDiff = localFile.Value.Size - remoteMetadata.Size;
+                
+                LogDetailedToFileOnly($"\n{localFile.Key}:");
+                LogDetailedToFileOnly($"  - Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {localFile.Value.Size:N0} bytes");
+                LogDetailedToFileOnly($"  - Remote: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {remoteMetadata.Size:N0} bytes");
+                
+                if (timeDiff == TimeSpan.Zero && sizeDiff == 0)
+                {
+                    LogDetailedToFileOnly($"  Status: IN SYNC");
+                    continue;
+                }
+                
+                if (timeDiff == TimeSpan.Zero && sizeDiff != 0)
+                {
+                    LogDetailedToFileOnly($"  Status: POTENTIAL ISSUE - same timestamp but different sizes");
+                    continue;
+                }
+                
+                if (timeDiff > TimeSpan.Zero)
+                {
+                    LogDetailedToFileOnly($"  Status: LOCAL IS NEWER");
+                    newerLocal++;
+                    newerLocalFiles.Add(localFile.Key);
+                    if (string.IsNullOrEmpty(localExample))
+                    {
+                        localExample = $"Local: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes), FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes)";
+                    }
+                    
+                    if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0 && !decidedEarly)
+                    {
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer locally - will sync to FTP");
+                        decidedEarly = true;
+                        earlyDecision = SyncRecommendation.SyncToFtp;
+                        break;
+                    }
+                }
+                else if (timeDiff < TimeSpan.Zero)
+                {
+                    LogDetailedToFileOnly($"  Status: REMOTE IS NEWER");
+                    newerRemote++;
+                    newerRemoteFiles.Add(localFile.Key);
+                    if (string.IsNullOrEmpty(remoteExample))
+                    {
+                        remoteExample = $"FTP: {localFile.Key} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes), Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes)";
+                    }
+                    
+                    if (analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0 && !decidedEarly)
+                    {
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer on FTP - will sync to local");
+                        decidedEarly = true;
+                        earlyDecision = SyncRecommendation.SyncToLocal;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                localOnly++;
+                localOnlyFiles.Add(localFile.Key);
+                if (string.IsNullOrEmpty(localExample))
+                {
+                    localExample = $"Local only: {localFile.Key} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                }
+            }
+        }
+
+        // Check for files that exist only on remote
+        if (!decidedEarly)
+        {
+            foreach (var remoteFile in remoteFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                
+                if (filesProcessed > 0 && filesProcessed % YieldIntervalFiles == 0)
+                {
+                    await Task.Delay(0);
+                }
+                filesProcessed++;
+                
+                if (!localFiles.ContainsKey(remoteFile.Key))
+                {
+                    remoteOnly++;
+                    remoteOnlyFiles.Add(remoteFile.Key);
+                    if (string.IsNullOrEmpty(remoteExample))
+                    {
+                        remoteExample = $"FTP only: {remoteFile.Key} {remoteFile.Value.Timestamp:yyyy-MM-dd HH:mm}";
+                    }
+                }
+            }
+        }
+
+        // Log file lists
+        Log("\n=== FILES NEWER LOCALLY ===");
+        foreach (var file in newerLocalFiles.Take(20))
+        {
+            Log($"  - {file}");
+        }
+        if (newerLocalFiles.Count > 20)
+        {
+            Log($"  ... and {newerLocalFiles.Count - 20} more");
+        }
+        
+        Log("\n=== FILES NEWER ON FTP ===");
+        foreach (var file in newerRemoteFiles.Take(20))
+        {
+            Log($"  - {file}");
+        }
+        if (newerRemoteFiles.Count > 20)
+        {
+            Log($"  ... and {newerRemoteFiles.Count - 20} more");
+        }
+        
+        Log("\n=== FILES ONLY PRESENT LOCALLY ===");
+        foreach (var file in localOnlyFiles.Take(20))
+        {
+            Log($"  - {file}");
+        }
+        if (localOnlyFiles.Count > 20)
+        {
+            Log($"  ... and {localOnlyFiles.Count - 20} more");
+        }
+        
+        Log("\n=== FILES ONLY PRESENT ON FTP ===");
+        foreach (var file in remoteOnlyFiles.Take(20))
+        {
+            Log($"  - {file}");
+        }
+        if (remoteOnlyFiles.Count > 20)
+        {
+            Log($"  ... and {remoteOnlyFiles.Count - 20} more");
+        }
+
+        var totalLocalNeedsSync = newerLocal + localOnly;
+        var totalRemoteNeedsSync = newerRemote + remoteOnly;
+
+        Log($"\nComparison: {newerLocal} files newer locally, {newerRemote} files newer remotely, {localOnly} files local-only, {remoteOnly} files remote-only");
+
+        SyncRecommendation recommendation;
+        if (decidedEarly && earlyDecision.HasValue)
+        {
+            recommendation = earlyDecision.Value;
+            Log($"\n[FAST MODE] Using early decision: {recommendation}");
+        }
+        else if (totalLocalNeedsSync == 0 && totalRemoteNeedsSync == 0)
+            recommendation = SyncRecommendation.InSync;
+        else if (totalLocalNeedsSync > 0 && totalRemoteNeedsSync == 0)
+            recommendation = SyncRecommendation.SyncToFtp;
+        else if (totalRemoteNeedsSync > 0 && totalLocalNeedsSync == 0)
+            recommendation = SyncRecommendation.SyncToLocal;
+        else
+            recommendation = totalLocalNeedsSync > totalRemoteNeedsSync ? SyncRecommendation.SyncToFtp : SyncRecommendation.SyncToLocal;
+
+        return new ComparisonResult
+        {
+            Recommendation = recommendation,
+            NewerLocalCount = newerLocal,
+            NewerRemoteCount = newerRemote,
+            LocalOnlyCount = localOnly,
+            RemoteOnlyCount = remoteOnly,
+            LocalExample = localExample,
+            RemoteExample = remoteExample,
+            NewerLocalFiles = newerLocalFiles,
+            NewerRemoteFiles = newerRemoteFiles,
+            LocalOnlyFiles = localOnlyFiles,
+            RemoteOnlyFiles = remoteOnlyFiles
+        };
+    }
+
+    /// <summary>
     /// Compares local and remote file metadata using timestamp and size:
     /// - Same timestamp + size = files in sync
     /// - Different = compare timestamps to determine newer version
     /// </summary>
     private ComparisonResult CompareFileMetadata(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken = default)
+    {
+        return CompareFileMetadata(localFiles, remoteFiles, cancellationToken, _analysisMode);
+    }
+
+    private ComparisonResult CompareFileMetadata(Dictionary<string, FileMetadata> localFiles, Dictionary<string, FileMetadata> remoteFiles, CancellationToken cancellationToken, AnalysisMode analysisMode)
     {
         const int DecisionThreshold = 3; // If we find 3 files newer on one side, decide direction immediately
         
@@ -962,10 +1324,23 @@ public class FtpService
                 var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
                 var sizeDiff = localFile.Value.Size - remoteMetadata.Size;
                 
+                // Log detailed information for each file (only to file, not UI)
+                LogDetailedToFileOnly($"\n{localFile.Key}:");
+                LogDetailedToFileOnly($"  - Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {localFile.Value.Size:N0} bytes");
+                LogDetailedToFileOnly($"  - Remote: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {remoteMetadata.Size:N0} bytes");
+                
                 // If both timestamp and size are identical, file is in sync
                 if (timeDiff == TimeSpan.Zero && sizeDiff == 0)
                 {
                     // File is in sync
+                    LogDetailedToFileOnly($"  Status: IN SYNC");
+                    continue;
+                }
+                
+                // Same timestamp but different size - log as potential issue instead of conflict
+                if (timeDiff == TimeSpan.Zero && sizeDiff != 0)
+                {
+                    LogDetailedToFileOnly($"  Status: POTENTIAL ISSUE - same timestamp but different sizes");
                     continue;
                 }
                 
@@ -973,6 +1348,7 @@ public class FtpService
                 if (timeDiff > TimeSpan.Zero)
                 {
                     // Local is newer
+                    LogDetailedToFileOnly($"  Status: LOCAL IS NEWER");
                     newerLocal++;
                     newerLocalFiles.Add(localFile.Key);
                     if (string.IsNullOrEmpty(localExample))
@@ -981,9 +1357,10 @@ public class FtpService
                     }
                     
                     // Quick mode: if we found 3 files newer locally, decide to sync to FTP
-                    if (_analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0)
+                    // NOTE: Don't break here - we need to continue analyzing all files for syncing
+                    if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer locally - deciding to sync to FTP");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer locally - will sync to FTP");
                         decidedEarly = true;
                         earlyDecision = SyncRecommendation.SyncToFtp;
                         break;
@@ -992,6 +1369,7 @@ public class FtpService
                 else if (timeDiff < TimeSpan.Zero)
                 {
                     // Remote is newer
+                    LogDetailedToFileOnly($"  Status: REMOTE IS NEWER");
                     newerRemote++;
                     newerRemoteFiles.Add(localFile.Key);
                     if (string.IsNullOrEmpty(remoteExample))
@@ -1000,22 +1378,13 @@ public class FtpService
                     }
                     
                     // Quick mode: if we found 3 files newer remotely, decide to sync to local
-                    if (_analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0)
+                    // NOTE: Don't break here - we need to continue analyzing all files for syncing
+                    if (analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer on FTP - deciding to sync to local");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer on FTP - will sync to local");
                         decidedEarly = true;
                         earlyDecision = SyncRecommendation.SyncToLocal;
                         break;
-                    }
-                }
-                else
-                {
-                    // Same timestamp but different size - flag as conflict
-                    newerLocal++;
-                    newerLocalFiles.Add(localFile.Key);
-                    if (string.IsNullOrEmpty(localExample))
-                    {
-                        localExample = $"CONFLICT: {localFile.Key} (same timestamp, size differs: {localFile.Value.Size} vs {remoteMetadata.Size})";
                     }
                 }
             }
@@ -1137,13 +1506,19 @@ public class FtpService
     /// </summary>
     public async Task SyncToFtpAsync(Action<string>? progressCallback = null)
     {
-        await Task.Run(() => SyncToFtp(progressCallback));
+        await SyncToFtp(progressCallback);
     }
 
-    private void SyncToFtp(Action<string>? progressCallback = null)
+    private async Task SyncToFtp(Action<string>? progressCallback = null)
     {
         try
         {
+            // Before syncing, do a FULL analysis to get all files that need syncing
+            Log("Starting full file analysis for sync...");
+            var fullResult = await GetFullAnalysisAsync(CancellationToken.None);
+            
+            Log($"Full analysis complete: {LastComparisonResult?.NewerLocalFiles?.Count ?? 0} files newer locally, {LastComparisonResult?.LocalOnlyFiles?.Count ?? 0} local-only files");
+
             // Create connection info with optimized buffer sizes
             var connectionInfo = new Renci.SshNet.ConnectionInfo(
                 _ftpConfig.Host,
@@ -1216,13 +1591,19 @@ public class FtpService
     /// </summary>
     public async Task SyncToLocalAsync(Action<string>? progressCallback = null)
     {
-        await Task.Run(() => SyncToLocal(progressCallback));
+        await SyncToLocal(progressCallback);
     }
 
-    private void SyncToLocal(Action<string>? progressCallback = null)
+    private async Task SyncToLocal(Action<string>? progressCallback = null)
     {
         try
         {
+            // Before syncing, do a FULL analysis to get all files that need syncing
+            Log("Starting full file analysis for sync...");
+            var fullResult = await GetFullAnalysisAsync(CancellationToken.None);
+            
+            Log($"Full analysis complete: {LastComparisonResult?.NewerRemoteFiles?.Count ?? 0} files newer remotely, {LastComparisonResult?.RemoteOnlyFiles?.Count ?? 0} remote-only files");
+
             // Create connection info with optimized buffer sizes
             var connectionInfo = new Renci.SshNet.ConnectionInfo(
                 _ftpConfig.Host,
@@ -1323,10 +1704,52 @@ public class FtpService
 
         System.Diagnostics.Debug.WriteLine($"[FtpService] {message}");
         
-        // Also send to status callback for UI display
-        if (!message.StartsWith("[FtpService]") && !message.StartsWith("==="))
+        // Send to UI with a circular buffer (max 50 logs)
+        // BUT only for important messages (not detailed file comparisons)
+        if (!message.StartsWith("  -") && !message.StartsWith("\n") && !message.Contains("Status: "))
         {
+            SendToUiLimitedLogs($"[{DateTime.Now:HH:mm:ss.fff}] [FtpService] {message}");
+        }
+    }
+
+    private void LogDetailedToFileOnly(string message)
+    {
+        // Only log to file, not to UI (for detailed file-by-file comparisons)
+        var exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+        var exeDir = Path.GetDirectoryName(exePath) ?? Directory.GetCurrentDirectory();
+        var logPath = Path.Combine(exeDir, "wsync.log");
+
+        try
+        {
+            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [FtpService] {message}\n");
+        }
+        catch { /* Ignore logging errors */ }
+    }
+
+    private void SendToUiLimitedLogs(string message)
+    {
+        // Add to circular buffer
+        _uiLogBuffer.AddLast(message);
+        
+        // Keep only the last MaxUiLogs entries
+        while (_uiLogBuffer.Count > MaxUiLogs)
+        {
+            _uiLogBuffer.RemoveFirst();
+        }
+        
+        // Throttle callbacks to UI to avoid overwhelming the dispatcher
+        var now = DateTime.Now;
+        if ((now - _lastStatusCallbackTime).TotalMilliseconds >= StatusCallbackThrottleMs)
+        {
+            _lastStatusCallbackTime = now;
             _statusCallback?.Invoke(message);
         }
+    }
+
+    private void UpdateStatus(string message)
+    {
+        // Centralized method for all UI status updates
+        // Uses the limited logs buffer
+        SendToUiLimitedLogs(message);
     }
 }
