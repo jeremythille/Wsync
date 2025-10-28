@@ -39,6 +39,10 @@ public partial class MainWindow : Window
         _configService = new ConfigService();
         InitializeSpinner();
         RecommendationText.Text = "Select a project and click Refresh to compare files.";
+        
+        // Initialize analysis mode to Quick (default)
+        ModeComboBox.SelectedIndex = (int)AnalysisMode.Quick;
+        
         LoadProjects();
         
         // Set window title with build date/time
@@ -59,7 +63,7 @@ public partial class MainWindow : Window
         _spinnerIndex++;
     }
 
-    private void LoadProjects()
+    private void LoadProjects(bool attachSelectionChangedEvent = true)
     {
         // Clear existing items
         ProjectComboBox.Items.Clear();
@@ -89,18 +93,13 @@ public partial class MainWindow : Window
             ProjectComboBox.SelectedIndex = 0;
             
             ProjectComboBox.IsEnabled = true;
-            ProjectComboBox.SelectionChanged += ProjectComboBox_SelectionChanged;
+            if (attachSelectionChangedEvent)
+            {
+                ProjectComboBox.SelectionChanged += ProjectComboBox_SelectionChanged;
+            }
             
             UpdateStatus("Ready. Select a project to analyze.", "", "");
         }
-        
-        // Load the analysis mode from state
-        LoadAnalysisMode(AnalysisMode.Quick);
-    }
-    
-    private void LoadAnalysisMode(AnalysisMode mode)
-    {
-        ModeComboBox.SelectedIndex = (int)mode;
     }
 
     private async void ProjectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -573,11 +572,38 @@ public partial class MainWindow : Window
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
+        // Save current selections before reloading
+        int savedProjectIndex = ProjectComboBox.SelectedIndex;
+        int savedModeIndex = ModeComboBox.SelectedIndex;
+        
         // Reload config and projects
         _configService.LoadConfig();
-        LoadProjects();
         
-        // Then analyze the currently selected project
+        // Temporarily detach both SelectionChanged events to prevent them from triggering analysis
+        ProjectComboBox.SelectionChanged -= ProjectComboBox_SelectionChanged;
+        ModeComboBox.SelectionChanged -= ModeComboBox_SelectionChanged;
+        
+        // LoadProjects with attachSelectionChangedEvent=false so it doesn't re-attach
+        LoadProjects(attachSelectionChangedEvent: false);
+        
+        // Restore the previous selections if they still exist
+        if (savedProjectIndex >= 0 && savedProjectIndex < ProjectComboBox.Items.Count)
+        {
+            ProjectComboBox.SelectedIndex = savedProjectIndex;
+        }
+        
+        // Re-attach the SelectionChanged event
+        ProjectComboBox.SelectionChanged += ProjectComboBox_SelectionChanged;
+        
+        if (savedModeIndex >= 0 && savedModeIndex < ModeComboBox.Items.Count)
+        {
+            ModeComboBox.SelectedIndex = savedModeIndex;
+        }
+        
+        // Re-attach the Mode SelectionChanged event
+        ModeComboBox.SelectionChanged += ModeComboBox_SelectionChanged;
+        
+        // Then analyze the currently selected project (only once, not triggered by selection change)
         _ = AnalyzeSyncStatusAsync();
     }
 
