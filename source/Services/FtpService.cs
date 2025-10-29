@@ -1195,7 +1195,9 @@ public class FtpService
                 {
                     LogDetailedToFileOnly($"  Status: DIFFERENT SIZE ({Math.Abs(sizeDiff):N0} bytes difference) - will be synced");
                     newerLocal++;
-                    newerLocalFiles.Add(remoteKey);  // Use remote key to preserve correct case
+                    newerRemote++;  // Add to both lists for bidirectional sync
+                    newerLocalFiles.Add(remoteKey);  // For uploading to FTP
+                    newerRemoteFiles.Add(remoteKey);  // For downloading from FTP
                     
                     if (string.IsNullOrEmpty(localExample))
                     {
@@ -1204,8 +1206,9 @@ public class FtpService
                     
                     if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && localOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} differing files - will sync to FTP (mirror mode)");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} differing files - will sync");
                         decidedEarly = true;
+                        // For Quick mode with different files, recommend based on git timestamps or default to FTP
                         earlyDecision = SyncRecommendation.SyncToFtp;
                         break;
                     }
@@ -1229,7 +1232,9 @@ public class FtpService
                 {
                     LogDetailedToFileOnly($"  Status: MODIFIED (identical size, {timeDiff.TotalMinutes:F0}min timestamp difference) - will be synced");
                     newerLocal++;
-                    newerLocalFiles.Add(remoteKey);  // Use remote key to preserve correct case
+                    newerRemote++;  // Add to both lists for bidirectional sync
+                    newerLocalFiles.Add(remoteKey);  // For uploading to FTP
+                    newerRemoteFiles.Add(remoteKey);  // For downloading from FTP
                     
                     if (string.IsNullOrEmpty(localExample))
                     {
@@ -1238,7 +1243,7 @@ public class FtpService
                     
                     if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && localOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} modified files - will sync to FTP");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} modified files - will sync");
                         decidedEarly = true;
                         earlyDecision = SyncRecommendation.SyncToFtp;
                         break;
