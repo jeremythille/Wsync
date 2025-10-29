@@ -1183,69 +1183,71 @@ public class FtpService
             if (remoteMetadata != null)
             {
                 // File exists on both sides (case-insensitive match)
-                var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
                 var sizeDiff = localFile.Value.Size - remoteMetadata.Size;
+                var timeDiff = localFile.Value.Timestamp - remoteMetadata.Timestamp;
                 
                 LogDetailedToFileOnly($"\n{remoteKey}:");  // Use remote key to preserve correct case
-                LogDetailedToFileOnly($"  - Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {localFile.Value.Size:N0} bytes");
-                LogDetailedToFileOnly($"  - Remote: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} - Size {remoteMetadata.Size:N0} bytes");
+                LogDetailedToFileOnly($"  - Local: Size {localFile.Value.Size:N0} bytes ({localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss})");
+                LogDetailedToFileOnly($"  - Remote: Size {remoteMetadata.Size:N0} bytes ({remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss})");
                 
-                // If sizes are identical, consider files in sync (timestamps can differ due to sync operations)
-                if (sizeDiff == 0)
+                // If sizes differ, files are definitely different
+                if (sizeDiff != 0)
                 {
-                    if (timeDiff == TimeSpan.Zero)
-                    {
-                        LogDetailedToFileOnly($"  Status: IN SYNC (identical timestamp and size)");
-                    }
-                    else
-                    {
-                        LogDetailedToFileOnly($"  Status: IN SYNC (same size, timestamp differences are from sync)");
-                    }
-                    continue;
-                }
-                
-                if (timeDiff == TimeSpan.Zero && sizeDiff != 0)
-                {
-                    LogDetailedToFileOnly($"  Status: POTENTIAL ISSUE - same timestamp but different sizes");
-                    continue;
-                }
-                
-                if (timeDiff > TimeSpan.Zero)
-                {
-                    LogDetailedToFileOnly($"  Status: LOCAL IS NEWER");
+                    LogDetailedToFileOnly($"  Status: DIFFERENT SIZE ({Math.Abs(sizeDiff):N0} bytes difference) - will be synced");
                     newerLocal++;
                     newerLocalFiles.Add(remoteKey);  // Use remote key to preserve correct case
+                    
                     if (string.IsNullOrEmpty(localExample))
                     {
-                        localExample = $"Local: {remoteKey} {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes), FTP: {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes)";
+                        localExample = $"Local: {remoteKey} - Size {localFile.Value.Size:N0} bytes, FTP: {remoteMetadata.Size:N0} bytes";
                     }
                     
-                    if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && newerRemote == 0 && localOnly == 0 && !decidedEarly)
+                    if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && localOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer locally - will sync to FTP");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} differing files - will sync to FTP (mirror mode)");
                         decidedEarly = true;
                         earlyDecision = SyncRecommendation.SyncToFtp;
                         break;
                     }
+                    continue;
                 }
-                else if (timeDiff < TimeSpan.Zero)
+                
+                // Sizes are identical - check if timestamp difference is just a timezone shift
+                // Timezone differences are typically round numbers (1-4 hours)
+                // Real file changes have irregular timestamps (3 minutes, 5 seconds, etc)
+                var absTimeDiffHours = Math.Abs(timeDiff.TotalHours);
+                var isLikelyTimezoneShift = IsRoundHourDifference(absTimeDiffHours);
+                
+                if (isLikelyTimezoneShift)
                 {
-                    LogDetailedToFileOnly($"  Status: REMOTE IS NEWER");
-                    newerRemote++;
-                    newerRemoteFiles.Add(remoteKey);  // Use remote key to preserve correct case
-                    if (string.IsNullOrEmpty(remoteExample))
+                    LogDetailedToFileOnly($"  Status: IN SYNC (identical size, {absTimeDiffHours:F1}h timestamp difference - timezone shift)");
+                    continue;
+                }
+                
+                // Sizes identical but timestamp differs by an irregular amount - file was modified
+                if (timeDiff != TimeSpan.Zero)
+                {
+                    LogDetailedToFileOnly($"  Status: MODIFIED (identical size, {timeDiff.TotalMinutes:F0}min timestamp difference) - will be synced");
+                    newerLocal++;
+                    newerLocalFiles.Add(remoteKey);  // Use remote key to preserve correct case
+                    
+                    if (string.IsNullOrEmpty(localExample))
                     {
-                        remoteExample = $"FTP: {remoteKey} {remoteMetadata.Timestamp:yyyy-MM-dd HH:mm:ss} ({remoteMetadata.Size} bytes), Local: {localFile.Value.Timestamp:yyyy-MM-dd HH:mm:ss} ({localFile.Value.Size} bytes)";
+                        localExample = $"Local: {remoteKey} - Modified {Math.Abs(timeDiff.TotalMinutes):F0}min ago vs remote";
                     }
                     
-                    if (analysisMode == AnalysisMode.Quick && newerRemote >= DecisionThreshold && newerLocal == 0 && remoteOnly == 0 && !decidedEarly)
+                    if (analysisMode == AnalysisMode.Quick && newerLocal >= DecisionThreshold && localOnly == 0 && !decidedEarly)
                     {
-                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} files newer on FTP - will sync to local");
+                        Log($"\n[QUICK MODE] Found at least {DecisionThreshold} modified files - will sync to FTP");
                         decidedEarly = true;
-                        earlyDecision = SyncRecommendation.SyncToLocal;
+                        earlyDecision = SyncRecommendation.SyncToFtp;
                         break;
                     }
+                    continue;
                 }
+                
+                // Same size, same timestamp - definitely in sync
+                LogDetailedToFileOnly($"  Status: IN SYNC (identical size and timestamp)");
             }
             else
             {
@@ -1638,6 +1640,21 @@ public class FtpService
                     var uploadedFileTimestamps = new List<(string remotePath, DateTime utcTime)>();
 
                     Log($"Starting upload of {totalFiles} files to FTP");
+                    
+                    // Log which files are being uploaded, especially .git files
+                    var gitFiles = filesToUpload.Where(f => f.Contains(".git")).ToList();
+                    if (gitFiles.Count > 0)
+                    {
+                        Log($"  - Found {gitFiles.Count} .git files to upload");
+                        foreach (var gitFile in gitFiles.Take(10))
+                        {
+                            Log($"    • {gitFile}");
+                        }
+                        if (gitFiles.Count > 10)
+                        {
+                            Log($"    ... and {gitFiles.Count - 10} more .git files");
+                        }
+                    }
 
                     foreach (var relativeFile in filesToUpload)
                     {
@@ -1669,6 +1686,10 @@ public class FtpService
                                     Log($"Uploaded: {relativeFile}");
                                 }
                             }
+                            else
+                            {
+                                Log($"Warning: Local file not found: {localFile} (relative: {relativeFile})");
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -1698,38 +1719,35 @@ public class FtpService
                         {
                             sshClient.Connect();
                             
-                            // Build touch command for all uploaded files
-                            var touchCommands = new StringBuilder();
+                            // Set timestamps using touch command with -t flag for precision
+                            // Format: touch -t [[CC]YY]MMDDhhmm[.ss] file
+                            int successCount = 0;
                             foreach (var (remotePath, utcTime) in uploadedFileTimestamps)
-                            {
-                                var unixTimestamp = (long)(utcTime - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-                                // Use Perl-compatible format for maximum portability across servers
-                                touchCommands.AppendLine($"perl -e 'utime({unixTimestamp}, {unixTimestamp}, \"{remotePath}\")' 2>/dev/null || touch \"{remotePath}\"");
-                            }
-                            
-                            if (touchCommands.Length > 0)
                             {
                                 try
                                 {
-                                    Log($"Executing timestamp commands for {uploadedFileTimestamps.Count} files");
-                                    var cmd = sshClient.CreateCommand(touchCommands.ToString());
+                                    // Use touch -t with UTC time formatted as YYYYMMDDhhmm.ss
+                                    var touchTimeFormat = utcTime.ToString("yyyyMMddHHmm.ss");
+                                    var cmd = sshClient.CreateCommand($"touch -t {touchTimeFormat} \"{remotePath}\" 2>/dev/null || stat \"{remotePath}\" > /dev/null");
                                     var result = cmd.Execute();
-                                    Log($"Timestamp setting execution completed, result: {result}");
+                                    
                                     if (cmd.ExitStatus == 0)
                                     {
-                                        Log($"Successfully set timestamps for {uploadedFileTimestamps.Count} files");
+                                        successCount++;
+                                        Log($"Set timestamp for {Path.GetFileName(remotePath)}: {touchTimeFormat}");
                                     }
                                     else
                                     {
-                                        Log($"Warning: Timestamp command returned exit status {cmd.ExitStatus}, output: {result}");
+                                        Log($"Warning: Failed to set timestamp for {remotePath}: exit code {cmd.ExitStatus}");
                                     }
                                 }
                                 catch (Exception ex)
                                 {
-                                    Log($"Warning: Could not set remote timestamps: {ex.Message}");
+                                    Log($"Warning: Could not set timestamp for {remotePath}: {ex.Message}");
                                 }
                             }
                             
+                            Log($"Successfully set timestamps for {successCount}/{uploadedFileTimestamps.Count} files");
                             sshClient.Disconnect();
                         }
                     }
@@ -1981,6 +1999,31 @@ public class FtpService
         {
             SendToUiLimitedLogs($"[{DateTime.Now:HH:mm:ss.fff}] [FtpService] {message}");
         }
+    }
+
+    /// <summary>
+    /// Determines if a time difference (in hours) is likely just a timezone shift.
+    /// Timezone shifts are typically round numbers (0, 1, 2, 3, 4 hours).
+    /// Real file modifications have irregular timestamps (3 minutes, 5 seconds, etc).
+    /// </summary>
+    private bool IsRoundHourDifference(double absTimeDiffHours)
+    {
+        // Allow 0 hours (exact match) and 1-4 hour round numbers (common timezone ranges)
+        // Also allow 5.5 hours (India/Nepal)
+        // With small tolerance for floating point: ±5 minutes acceptable
+        const double tolerance = 5.0 / 60.0; // 5 minutes in hours
+        
+        var roundHours = new[] { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0 };
+        
+        foreach (var roundHour in roundHours)
+        {
+            if (Math.Abs(absTimeDiffHours - roundHour) < tolerance)
+            {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     private void LogDetailedToFileOnly(string message)
