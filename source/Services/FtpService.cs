@@ -56,6 +56,16 @@ internal class FileMetadata
 }
 
 /// <summary>
+/// Holds git commit info result with optional error details
+/// </summary>
+internal class GitCommitInfo
+{
+    public DateTime? Timestamp { get; set; }
+    public string? Hash { get; set; }
+    public string? ErrorDetails { get; set; }
+}
+
+/// <summary>
 /// Service for FTP operations and file comparison
 /// </summary>
 public class FtpService
@@ -354,10 +364,31 @@ public class FtpService
             cancellationToken.ThrowIfCancellationRequested();
 
             // Get remote commit info via SSH
-            var (remoteCommitTime, remoteHash) = await GetRemoteGitCommitInfoAsync(cancellationToken);
-            if (remoteCommitTime == null || string.IsNullOrEmpty(remoteHash))
+            var gitInfo = await GetRemoteGitCommitInfoAsync(cancellationToken);
+            if (gitInfo.Timestamp == null || string.IsNullOrEmpty(gitInfo.Hash))
             {
-                var errorMsg = "Failed to read remote git commit timestamp.\n\nPossible causes:\n• Git not installed on remote server\n• Remote path is not in a git repository\n• SSH connection failed\n\nCheck the detailed logs for more information.";
+                // Build detailed error message
+                var errorMsg = "Failed to read remote git commit timestamp.\n\n";
+                
+                if (!string.IsNullOrEmpty(gitInfo.ErrorDetails) && gitInfo.ErrorDetails.Contains("dubious ownership"))
+                {
+                    errorMsg += "🔒 GIT SECURITY ISSUE - Dubious Ownership Detected\n\n";
+                    errorMsg += "The .git repository on the remote server is owned by a different user,\n";
+                    errorMsg += "which is a Git security restriction (CVE-2022-24765).\n\n";
+                    errorMsg += "To fix this, run the following command on the remote server:\n\n";
+                    errorMsg += $"  git config --global --add safe.directory {_remotePath}\n\n";
+                    errorMsg += "Then try syncing again.";
+                }
+                else
+                {
+                    errorMsg += "Possible causes:\n";
+                    errorMsg += "• Git not installed on remote server\n";
+                    errorMsg += "• Remote path is not in a git repository\n";
+                    errorMsg += "• SSH connection failed\n";
+                    errorMsg += "• Git repository ownership issue (dubious ownership)\n\n";
+                    errorMsg += "Check the detailed logs for more information.";
+                }
+                
                 Log(errorMsg);
                 LastComparisonResult = new ComparisonResult
                 {
@@ -369,9 +400,9 @@ public class FtpService
             }
 
             Log($"Local commit: {localHash} {localCommitTime:yyyy-MM-dd HH:mm:ss}");
-            Log($"Remote commit: {remoteHash} {remoteCommitTime:yyyy-MM-dd HH:mm:ss}");
+            Log($"Remote commit: {gitInfo.Hash} {gitInfo.Timestamp:yyyy-MM-dd HH:mm:ss}");
 
-            var timeDiff = localCommitTime.Value - remoteCommitTime.Value;
+            var timeDiff = localCommitTime.Value - gitInfo.Timestamp.Value;
             
             var result = new ComparisonResult
             {
@@ -386,25 +417,25 @@ public class FtpService
             {
                 result.Recommendation = SyncRecommendation.SyncToFtp;
                 var localHashShort = !string.IsNullOrEmpty(localHash) ? localHash.Substring(0, Math.Min(7, localHash.Length)) : "unknown";
-                var remoteHashShort = !string.IsNullOrEmpty(remoteHash) ? remoteHash.Substring(0, Math.Min(7, remoteHash.Length)) : "unknown";
+                var remoteHashShort = !string.IsNullOrEmpty(gitInfo.Hash) ? gitInfo.Hash.Substring(0, Math.Min(7, gitInfo.Hash.Length)) : "unknown";
                 result.NewerLocalFiles.Add($"Local (newer):  {localHashShort} {localCommitTime:yyyy-MM-dd HH:mm:ss}");
-                result.NewerRemoteFiles.Add($"Remote (older): {remoteHashShort} {remoteCommitTime:yyyy-MM-dd HH:mm:ss}");
+                result.NewerRemoteFiles.Add($"Remote (older): {remoteHashShort} {gitInfo.Timestamp:yyyy-MM-dd HH:mm:ss}");
             }
             else if (timeDiff < TimeSpan.Zero)
             {
                 result.Recommendation = SyncRecommendation.SyncToLocal;
                 var localHashShort = !string.IsNullOrEmpty(localHash) ? localHash.Substring(0, Math.Min(7, localHash.Length)) : "unknown";
-                var remoteHashShort = !string.IsNullOrEmpty(remoteHash) ? remoteHash.Substring(0, Math.Min(7, remoteHash.Length)) : "unknown";
+                var remoteHashShort = !string.IsNullOrEmpty(gitInfo.Hash) ? gitInfo.Hash.Substring(0, Math.Min(7, gitInfo.Hash.Length)) : "unknown";
                 result.NewerLocalFiles.Add($"Local (older):  {localHashShort} {localCommitTime:yyyy-MM-dd HH:mm:ss}");
-                result.NewerRemoteFiles.Add($"Remote (newer): {remoteHashShort} {remoteCommitTime:yyyy-MM-dd HH:mm:ss}");
+                result.NewerRemoteFiles.Add($"Remote (newer): {remoteHashShort} {gitInfo.Timestamp:yyyy-MM-dd HH:mm:ss}");
             }
             else
             {
                 result.Recommendation = SyncRecommendation.InSync;
                 var localHashShort = !string.IsNullOrEmpty(localHash) ? localHash.Substring(0, Math.Min(7, localHash.Length)) : "unknown";
-                var remoteHashShort = !string.IsNullOrEmpty(remoteHash) ? remoteHash.Substring(0, Math.Min(7, remoteHash.Length)) : "unknown";
+                var remoteHashShort = !string.IsNullOrEmpty(gitInfo.Hash) ? gitInfo.Hash.Substring(0, Math.Min(7, gitInfo.Hash.Length)) : "unknown";
                 result.NewerLocalFiles.Add($"Local (same):   {localHashShort} {localCommitTime:yyyy-MM-dd HH:mm:ss}");
-                result.NewerRemoteFiles.Add($"Remote (same):  {remoteHashShort} {remoteCommitTime:yyyy-MM-dd HH:mm:ss}");
+                result.NewerRemoteFiles.Add($"Remote (same):  {remoteHashShort} {gitInfo.Timestamp:yyyy-MM-dd HH:mm:ss}");
             }
 
             LastComparisonResult = result;
@@ -485,7 +516,7 @@ public class FtpService
     /// <summary>
     /// Gets the remote git repository's latest commit timestamp and hash via SSH
     /// </summary>
-    private async Task<(DateTime? timestamp, string? hash)> GetRemoteGitCommitInfoAsync(CancellationToken cancellationToken = default)
+    private async Task<GitCommitInfo> GetRemoteGitCommitInfoAsync(CancellationToken cancellationToken = default)
     {
         try
         {
@@ -528,7 +559,7 @@ public class FtpService
                                     if (DateTime.TryParse(output, out var commitTime))
                                     {
                                         Log($"Remote git commit: {hash} {output} (from {gitPath})");
-                                        return (commitTime.ToUniversalTime(), hash);
+                                        return new GitCommitInfo { Timestamp = commitTime.ToUniversalTime(), Hash = hash };
                                     }
                                     else
                                     {
@@ -553,7 +584,16 @@ public class FtpService
 
                     var errorDetails = string.Join(" | ", gitErrors);
                     Log($"Git not found at any of the standard paths. Details: {errorDetails}");
-                    return (null, null);
+                    
+                    // Check for "dubious ownership" error - this is a specific git security issue
+                    if (errorDetails.Contains("dubious ownership"))
+                    {
+                        Log($"\n⚠️  GIT SECURITY ISSUE: The .git repository is owned by a different user.");
+                        Log($"On the remote server, run this command to fix it:");
+                        Log($"  git config --global --add safe.directory {_remotePath}");
+                    }
+                    
+                    return new GitCommitInfo { ErrorDetails = errorDetails };
                 }
                 finally
                 {
@@ -564,7 +604,7 @@ public class FtpService
         catch (Exception ex)
         {
             Log($"Error getting remote git commit info: {ex.Message}");
-            return (null, null);
+            return new GitCommitInfo { ErrorDetails = ex.Message };
         }
     }
 
@@ -1302,24 +1342,39 @@ public class FtpService
         }
 
         // Log file lists
-        Log("\n=== FILES NEWER LOCALLY ===");
-        foreach (var file in newerLocalFiles.Take(20))
+        Log("\n=== FILES DIFFERENT (SIZE MISMATCH) ===");
+        // Files that have different sizes appear in both newerLocalFiles and newerRemoteFiles
+        var differentSizeFiles = newerLocalFiles.Intersect(newerRemoteFiles).ToList();
+        foreach (var file in differentSizeFiles.Take(20))
         {
-            Log($"  - {file}");
+            Log($"  • {file}");
         }
-        if (newerLocalFiles.Count > 20)
+        if (differentSizeFiles.Count > 20)
         {
-            Log($"  ... and {newerLocalFiles.Count - 20} more");
+            Log($"  ... and {differentSizeFiles.Count - 20} more");
+        }
+
+        var uniqueLocalFiles = newerLocalFiles.Except(newerRemoteFiles).ToList();
+        var uniqueRemoteFiles = newerRemoteFiles.Except(newerLocalFiles).ToList();
+        
+        Log("\n=== FILES NEWER LOCALLY (MODIFIED) ===");
+        foreach (var file in uniqueLocalFiles.Take(20))
+        {
+            Log($"  • {file}");
+        }
+        if (uniqueLocalFiles.Count > 20)
+        {
+            Log($"  ... and {uniqueLocalFiles.Count - 20} more");
         }
         
-        Log("\n=== FILES NEWER ON FTP ===");
-        foreach (var file in newerRemoteFiles.Take(20))
+        Log("\n=== FILES NEWER ON FTP (MODIFIED) ===");
+        foreach (var file in uniqueRemoteFiles.Take(20))
         {
-            Log($"  - {file}");
+            Log($"  • {file}");
         }
-        if (newerRemoteFiles.Count > 20)
+        if (uniqueRemoteFiles.Count > 20)
         {
-            Log($"  ... and {newerRemoteFiles.Count - 20} more");
+            Log($"  ... and {uniqueRemoteFiles.Count - 20} more");
         }
         
         Log("\n=== FILES ONLY PRESENT LOCALLY ===");

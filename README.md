@@ -110,7 +110,7 @@ cd source
 dotnet publish -c Release -r win-x64 --self-contained
 ```
 
-The executable will be in `bin/Release/net8.0-windows/win-x64/publish/Wsync.exe`
+The executable will be in `program/Wsync.exe`
 
 ### Project Structure
 
