@@ -1234,10 +1234,30 @@ public class FtpService
                 if (sizeDiff != 0)
                 {
                     LogDetailedToFileOnly($"  Status: DIFFERENT SIZE ({Math.Abs(sizeDiff):N0} bytes difference) - will be synced");
-                    newerLocal++;
-                    newerRemote++;  // Add to both lists for bidirectional sync
-                    newerLocalFiles.Add(remoteKey);  // For uploading to FTP
-                    newerRemoteFiles.Add(remoteKey);  // For downloading from FTP
+                    
+                    // For size-different files, determine which side is newer based on timestamp
+                    // and add to only the appropriate list to avoid confusing UI
+                    if (timeDiff > TimeSpan.Zero)
+                    {
+                        // Local is newer (modified more recently)
+                        newerLocal++;
+                        newerLocalFiles.Add(remoteKey);
+                        LogDetailedToFileOnly($"  → Local file is newer (modified {Math.Abs(timeDiff.TotalMinutes):F0}min after remote)");
+                    }
+                    else if (timeDiff < TimeSpan.Zero)
+                    {
+                        // Remote is newer (modified more recently)
+                        newerRemote++;
+                        newerRemoteFiles.Add(remoteKey);
+                        LogDetailedToFileOnly($"  → Remote file is newer (modified {Math.Abs(timeDiff.TotalMinutes):F0}min after local)");
+                    }
+                    else
+                    {
+                        // Same timestamp, different size - unusual, but default to remote (safer)
+                        newerRemote++;
+                        newerRemoteFiles.Add(remoteKey);
+                        LogDetailedToFileOnly($"  → Same timestamp but different size - favoring remote");
+                    }
                     
                     if (string.IsNullOrEmpty(localExample))
                     {
@@ -1267,14 +1287,37 @@ public class FtpService
                     continue;
                 }
                 
-                // Sizes identical but timestamp differs by an irregular amount - file was modified
+                // Check if timestamp difference is within recent-sync tolerance
+                // Files synced seconds apart should be treated as identical, not modified
+                var absTimeDiffSeconds = Math.Abs(timeDiff.TotalSeconds);
+                const double recentSyncToleranceSeconds = 5.0;  // 5 second tolerance for sync operations
+                
+                if (absTimeDiffSeconds <= recentSyncToleranceSeconds)
+                {
+                    LogDetailedToFileOnly($"  Status: IN SYNC (identical size, {absTimeDiffSeconds:F1}s timestamp difference - recent sync)");
+                    continue;
+                }
+                
+                // Sizes identical but timestamp differs by more than sync tolerance - file was modified
                 if (timeDiff != TimeSpan.Zero)
                 {
                     LogDetailedToFileOnly($"  Status: MODIFIED (identical size, {timeDiff.TotalMinutes:F0}min timestamp difference) - will be synced");
-                    newerLocal++;
-                    newerRemote++;  // Add to both lists for bidirectional sync
-                    newerLocalFiles.Add(remoteKey);  // For uploading to FTP
-                    newerRemoteFiles.Add(remoteKey);  // For downloading from FTP
+                    
+                    // For modified files, add to the list corresponding to which version is newer
+                    if (timeDiff > TimeSpan.Zero)
+                    {
+                        // Local is newer (modified more recently)
+                        newerLocal++;
+                        newerLocalFiles.Add(remoteKey);
+                        LogDetailedToFileOnly($"  → Local version is newer ({timeDiff.TotalMinutes:F0}min more recent)");
+                    }
+                    else
+                    {
+                        // Remote is newer (modified more recently)
+                        newerRemote++;
+                        newerRemoteFiles.Add(remoteKey);
+                        LogDetailedToFileOnly($"  → Remote version is newer ({Math.Abs(timeDiff.TotalMinutes):F0}min more recent)");
+                    }
                     
                     if (string.IsNullOrEmpty(localExample))
                     {
@@ -1967,6 +2010,65 @@ public class FtpService
                     client.Disconnect();
                     Log($"Download complete: {downloadedCount}/{totalFiles} files");
                     progressCallback?.Invoke($"✓ Download complete: {downloadedCount}/{totalFiles} files");
+                    
+                    // Now query the actual remote timestamps via SSH and set local files to match
+                    // This ensures timestamps match exactly what the next analysis will see
+                    Log("Synchronizing timestamps via SSH for downloaded files...");
+                    using (var sshClient = new SshClient(_ftpConfig.Host, _ftpConfig.Port, _ftpConfig.Username, _ftpConfig.Password))
+                    {
+                        sshClient.Connect();
+                        try
+                        {
+                            const int FilesPerBatch = 50;
+                            var fileList = filesToDownload.ToList();
+                            
+                            for (int batchStart = 0; batchStart < fileList.Count; batchStart += FilesPerBatch)
+                            {
+                                var batchEnd = Math.Min(batchStart + FilesPerBatch, fileList.Count);
+                                var batchFiles = fileList.GetRange(batchStart, batchEnd - batchStart);
+                                
+                                // Create script to get timestamps
+                                var scriptLines = new List<string> { "cd " + _remotePath };
+                                foreach (var fileKey in batchFiles)
+                                {
+                                    var filePath = Path.Combine(_remotePath, fileKey).Replace('\\', '/').Replace("\"", "\\\"");
+                                    scriptLines.Add($"stat -c '%Y' \"{filePath}\" 2>/dev/null || stat -f '%m' \"{filePath}\" 2>/dev/null || echo 0");
+                                }
+                                
+                                var script = string.Join("; ", scriptLines);
+                                var result = sshClient.RunCommand(script);
+                                
+                                if (result.ExitStatus == 0)
+                                {
+                                    var timestamps = result.Result.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                                    int index = 0;
+                                    
+                                    foreach (var fileKey in batchFiles)
+                                    {
+                                        if (index < timestamps.Length && long.TryParse(timestamps[index].Trim(), out var unixTimestamp) && unixTimestamp > 0)
+                                        {
+                                            var utcTime = DateTime.UnixEpoch.AddSeconds(unixTimestamp);
+                                            var localFile = Path.Combine(_localPath, fileKey.Replace('/', Path.DirectorySeparatorChar));
+                                            try
+                                            {
+                                                File.SetLastWriteTimeUtc(localFile, utcTime);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Log($"Warning: Could not set timestamp for {fileKey}: {ex.Message}");
+                                            }
+                                        }
+                                        index++;
+                                    }
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            sshClient.Disconnect();
+                        }
+                    }
+                    Log("Timestamp synchronization complete");
                 }
 
                 // Delete files that only exist locally (mirror sync)
