@@ -66,8 +66,12 @@ Edit `config.json5`:
     passiveMode: false, // Usually true for FTP connections
     secure: true, // Set to true to use SFTP (SSH) instead of FTP
   },
+
+  // Extensions ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway).
   excludedExtensions: ["qzx", "zxq", "jqv", "vqx"],
-  excludedFolders: ["doNotSyncThisFolder"], // just folder names, without paths
+
+  // Folders ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway). Just folder names, without paths
+  excludedFolders: ["doNotSyncThisFolder"],
 }
 ```
 

@@ -74,6 +74,11 @@ public class AppConfig
     [Newtonsoft.Json.JsonProperty("excludedExtensions")]
     public List<string> ExcludedExtensions { get; set; } = new();
     
+    /// <summary>
+    /// Folders to exclude from QUICK ANALYSIS ONLY (for UI display).
+    /// These folders WILL still be synced - this only affects the quick-view analysis.
+    /// For actual sync operations, all folders are included.
+    /// </summary>
     [Newtonsoft.Json.JsonProperty("excludedFolders")]
     public List<string> ExcludedFolders { get; set; } = new();
 }

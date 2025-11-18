@@ -119,10 +119,11 @@ public class FtpService
         "playwright-report"
     };
 
-    // All ignored folders (hardcoded + from config)
-    private List<string> _ignoredFolders;
+    // Folders ignored only during QUICK ANALYSIS (for UI display purposes)
+    // These folders ARE synced - they're only excluded from quick-view analysis
+    private List<string> _analysisOnlyIgnoredFolders;
 
-    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? excludedFolders = null, AnalysisMode analysisMode = AnalysisMode.Full)
+    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? analysisOnlyIgnoredFolders = null, AnalysisMode analysisMode = AnalysisMode.Full)
     {
         _ftpConfig = ftpConfig;
         _localPath = localPath;
@@ -130,11 +131,11 @@ public class FtpService
         _analysisMode = analysisMode;
         _excludedExtensions = excludedExtensions ?? new List<string>();
 
-        // Merge hardcoded ignored folders with config-provided excluded folders
-        _ignoredFolders = new List<string>(_hardcodedIgnoredFolders);
-        if (excludedFolders != null)
+        // Merge hardcoded ignored folders (only for quick analysis display)
+        _analysisOnlyIgnoredFolders = new List<string>(_hardcodedIgnoredFolders);
+        if (analysisOnlyIgnoredFolders != null)
         {
-            _ignoredFolders.AddRange(excludedFolders);
+            _analysisOnlyIgnoredFolders.AddRange(analysisOnlyIgnoredFolders);
         }
     }
 
@@ -282,12 +283,12 @@ public class FtpService
             var savedMode = _analysisMode;
             _analysisMode = AnalysisMode.Full;
             
-            // Temporarily remove .git from ignored folders if includeGit is true
-            var savedIgnoredFolders = _ignoredFolders;
+            // Temporarily remove .git from analysisOnlyIgnoredFolders if includeGit is true
+            var savedAnalysisOnlyIgnoredFolders = _analysisOnlyIgnoredFolders;
             if (includeGit)
             {
-                _ignoredFolders = new List<string>(_ignoredFolders);
-                _ignoredFolders.Remove(".git");
+                _analysisOnlyIgnoredFolders = new List<string>(_analysisOnlyIgnoredFolders);
+                _analysisOnlyIgnoredFolders.Remove(".git");
             }
             
             try
@@ -320,11 +321,11 @@ public class FtpService
             }
             finally
             {
-                // Restore the original analysis mode and ignored folders
+                // Restore the original analysis mode and analysisOnlyIgnoredFolders
                 _analysisMode = savedMode;
                 if (includeGit)
                 {
-                    _ignoredFolders = savedIgnoredFolders;
+                    _analysisOnlyIgnoredFolders = savedAnalysisOnlyIgnoredFolders;
                 }
             }
         }
@@ -803,14 +804,11 @@ public class FtpService
                 return files;
             }
 
-            // Get subdirectories and recurse, but skip ignored ones
+            // Get subdirectories and recurse (include ALL folders in sync)
             var subdirs = directory.GetDirectories();
             foreach (var subdir in subdirs)
             {
-                if (!_ignoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
-                {
-                    files.AddRange(await GetFilesRecursiveAsync(subdir, currentDepth + 1, maxDepth));
-                }
+                files.AddRange(await GetFilesRecursiveAsync(subdir, currentDepth + 1, maxDepth));
             }
         }
         catch (Exception ex)
@@ -887,11 +885,11 @@ public class FtpService
                 return files;
             }
 
-            // Get subdirectories and recurse, but skip ignored ones
+            // Get subdirectories and recurse, but skip analysisOnlyIgnoredFolders
             var subdirs = directory.GetDirectories();
             foreach (var subdir in subdirs)
             {
-                if (!_ignoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
+                if (!_analysisOnlyIgnoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     files.AddRange(GetFilesRecursive(subdir, currentDepth + 1, maxDepth));
                 }
@@ -1074,25 +1072,17 @@ public class FtpService
             {
                 if (item.IsDirectory)
                 {
-                    // Check if folder should be ignored
-                    if (!_ignoredFolders.Contains(item.Name))
+                    // Stop recursing if we've reached max depth
+                    if (currentDepth >= maxDepth)
                     {
-                        // Stop recursing if we've reached max depth
-                        if (currentDepth >= maxDepth)
-                        {
-                            Log($"SFTP: Depth limit reached ({currentDepth}), stopping recursion into: {item.Name}");
-                            continue;
-                        }
+                        Log($"SFTP: Depth limit reached ({currentDepth}), stopping recursion into: {item.Name}");
+                        continue;
+                    }
 
-                        Log($"SFTP: Recursing into directory: {item.FullName}");
-                        // Recurse into subdirectories
-                        var subPath = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
-                        await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth, cancellationToken);
-                    }
-                    else
-                    {
-                        Log($"SFTP: Skipping ignored directory: {item.Name}");
-                    }
+                    Log($"SFTP: Recursing into directory: {item.FullName}");
+                    // Recurse into subdirectories (include ALL folders in sync)
+                    var subPath = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
+                    await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth, cancellationToken);
                 }
                 else if (item.IsRegularFile)
                 {
