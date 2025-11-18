@@ -75,10 +75,19 @@ public class AppConfig
     public List<string> ExcludedExtensions { get; set; } = new();
     
     /// <summary>
-    /// Folders to exclude from QUICK ANALYSIS ONLY (for UI display).
-    /// These folders WILL still be synced - this only affects the quick-view analysis.
-    /// For actual sync operations, all folders are included.
+    /// Folders to exclude from ANALYSIS display purposes ONLY.
+    /// These folders WILL still be synced - this only affects the quick-view analysis UI.
+    /// Combined with excludedFoldersFromSync and hardcoded ignored folders during analysis.
     /// </summary>
-    [Newtonsoft.Json.JsonProperty("excludedFolders")]
-    public List<string> ExcludedFolders { get; set; } = new();
+    [Newtonsoft.Json.JsonProperty("excludedFoldersFromAnalysis")]
+    public List<string> ExcludedFoldersFromAnalysis { get; set; } = new();
+    
+    /// <summary>
+    /// Folders to exclude from SYNC operations.
+    /// These folders will NOT be synced, but they will appear in analysis display.
+    /// Analysis ignores these PLUS excludedFoldersFromAnalysis PLUS hardcoded ignored folders.
+    /// Sync ignores these PLUS hardcoded ignored folders only.
+    /// </summary>
+    [Newtonsoft.Json.JsonProperty("excludedFoldersFromSync")]
+    public List<string> ExcludedFoldersFromSync { get; set; } = new();
 }

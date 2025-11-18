@@ -92,8 +92,9 @@ public class FtpService
     private const int MaxDepthNormalMode = int.MaxValue; // No limit
     private const int DecisionThreshold = 3; // For fast mode: decide after finding 3 differing files
 
-    // Hardcoded folders to ignore when scanning
-    private readonly string[] _hardcodedIgnoredFolders = new[]
+    // Folders to NEVER sync - these are generated/build artifacts and cache folders
+    // This list is ALWAYS applied to sync operations (not just analysis)
+    private readonly string[] _ignoredFoldersFromSync = new[]
     {
         "node_modules",
         ".svn",
@@ -119,11 +120,15 @@ public class FtpService
         "playwright-report"
     };
 
-    // Folders ignored only during QUICK ANALYSIS (for UI display purposes)
-    // These folders ARE synced - they're only excluded from quick-view analysis
+    // Folders ignored only during ANALYSIS (for UI display purposes + user sync exclusions)
+    // This combines: _ignoredFoldersFromSync + config.excludedFoldersFromAnalysis + config.excludedFoldersFromSync
     private List<string> _analysisOnlyIgnoredFolders;
+    
+    // Folders to skip during sync operations
+    // This is: _ignoredFoldersFromSync + config.excludedFoldersFromSync only
+    private List<string> _syncIgnoredFolders;
 
-    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? analysisOnlyIgnoredFolders = null, AnalysisMode analysisMode = AnalysisMode.Full)
+    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? excludedFoldersFromAnalysis = null, List<string>? excludedFoldersFromSync = null, AnalysisMode analysisMode = AnalysisMode.Full)
     {
         _ftpConfig = ftpConfig;
         _localPath = localPath;
@@ -131,11 +136,22 @@ public class FtpService
         _analysisMode = analysisMode;
         _excludedExtensions = excludedExtensions ?? new List<string>();
 
-        // Merge hardcoded ignored folders (only for quick analysis display)
-        _analysisOnlyIgnoredFolders = new List<string>(_hardcodedIgnoredFolders);
-        if (analysisOnlyIgnoredFolders != null)
+        // Build analysis ignore list: hardcoded + config analysis + config sync
+        _analysisOnlyIgnoredFolders = new List<string>(_ignoredFoldersFromSync);
+        if (excludedFoldersFromAnalysis != null)
         {
-            _analysisOnlyIgnoredFolders.AddRange(analysisOnlyIgnoredFolders);
+            _analysisOnlyIgnoredFolders.AddRange(excludedFoldersFromAnalysis);
+        }
+        if (excludedFoldersFromSync != null)
+        {
+            _analysisOnlyIgnoredFolders.AddRange(excludedFoldersFromSync);
+        }
+        
+        // Build sync ignore list: hardcoded + config sync only
+        _syncIgnoredFolders = new List<string>(_ignoredFoldersFromSync);
+        if (excludedFoldersFromSync != null)
+        {
+            _syncIgnoredFolders.AddRange(excludedFoldersFromSync);
         }
     }
 
@@ -804,10 +820,16 @@ public class FtpService
                 return files;
             }
 
-            // Get subdirectories and recurse (include ALL folders in sync)
+            // Get subdirectories and recurse (skip sync-ignored folders)
             var subdirs = directory.GetDirectories();
             foreach (var subdir in subdirs)
             {
+                // Skip folders excluded from sync
+                if (_syncIgnoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                
                 files.AddRange(await GetFilesRecursiveAsync(subdir, currentDepth + 1, maxDepth));
             }
         }
@@ -1079,8 +1101,15 @@ public class FtpService
                         continue;
                     }
 
+                    // Skip sync-ignored folders
+                    if (_syncIgnoredFolders.Contains(item.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        Log($"SFTP: Skipping sync-ignored directory: {item.Name}");
+                        continue;
+                    }
+
                     Log($"SFTP: Recursing into directory: {item.FullName}");
-                    // Recurse into subdirectories (include ALL folders in sync)
+                    // Recurse into subdirectories (skip sync-ignored folders)
                     var subPath = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
                     await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth, cancellationToken);
                 }

@@ -70,8 +70,11 @@ Edit `config.json5`:
   // Extensions ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway).
   excludedExtensions: ["qzx", "zxq", "jqv", "vqx"],
 
-  // Folders ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway). Just folder names, without paths
-  excludedFolders: ["doNotSyncThisFolder"],
+  // Folders ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway)
+  excludedFoldersFromAnalysis: ["doNotAnalyzeThisFolder"],
+
+  // Folders ignored from analysis AND sync
+  excludedFoldersFromSync : ["doNotAnalyzeNorSyncThisFolder"]
 }
 ```
 

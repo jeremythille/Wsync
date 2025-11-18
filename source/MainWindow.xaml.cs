@@ -156,7 +156,7 @@ public partial class MainWindow : Window
         var ftpConfig = config.Ftp;
         var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
 
-        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, mode);
+        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFoldersFromAnalysis, config.ExcludedFoldersFromSync, mode);
         _ftpService.SetStatusCallback(UpdateAnalysisStatus);
 
         try
@@ -648,7 +648,7 @@ public partial class MainWindow : Window
             var ftpConfig = config.Ftp;
             var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
 
-            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFolders, mode);
+            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFoldersFromAnalysis, config.ExcludedFoldersFromSync, mode);
             _ftpService.SetStatusCallback(UpdateAnalysisStatus);
             
             // Need to analyze first to populate LastComparisonResult
