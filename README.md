@@ -1,13 +1,13 @@
 # Wsync - File Sync Utility
 
-A tiny, minimal Windows desktop application for synchronizing files between your local desktop and an FTP/SFTP server.
+A tiny, minimal Windows desktop application for synchronizing files between your local desktop and an FTP/SFTP server. Uses **WinSCP** as the sync engine for reliable, efficient file transfers.
 
 ## Features
 
 - 🖥️ Clean, minimal UI - quickly see sync status at a glance
 - 📋 Easy per-project configuration - manage multiple projects
 - 🚀 Portable - no installation needed, can run from a USB key
-- 🪶 Super lightweight - less than 2 MB
+- 🪶 Super lightweight - less than 2 MB (plus WinSCP)
 - 🔄 Bi-directional file sync (Desktop ↔ FTP/SFTP)
 - 🎯 Multiple analysis modes:
   - **Full**: Analyzes all files recursively
@@ -15,10 +15,29 @@ A tiny, minimal Windows desktop application for synchronizing files between your
   - **Git**: Compares latest git commits
 - ⚡ Fast timestamp-based comparison (no hashing)
 - 🔒 Credentials stored securely (local config file)
+- 🔧 **WinSCP-powered sync**: Reliable file synchronization with automatic file deletion and proper permission handling
 
 <div align="center">
   <img src="./screenshot.png" alt="Wsync Screenshot" />
 </div>
+
+## Requirements
+
+### WinSCP Installation
+
+Wsync uses **WinSCP** for all file synchronization operations. You must have WinSCP installed:
+
+1. **Download WinSCP**: https://winscp.net/
+2. **Install** in a standard location (e.g., `C:\Program Files\WinSCP\`) or specify the path in `config.json5`
+3. **Verify**: The installation should contain `winscp.com` (the command-line executable)
+
+The application will automatically locate WinSCP if installed in a standard location, or you can specify the path in the `winscpPath` config option.
+
+### .NET Runtime
+
+Wsync requires **Microsoft .NET 8** runtime. If not installed, you'll be prompted to install it when you first run the application.
+
+---
 
 ## How to Run
 
@@ -45,6 +64,13 @@ Edit `config.json5`:
 
 ```json5
 {
+  // Optional: Path to WinSCP executable (required for sync to work)
+  // Can be either:
+  //   - Full path to winscp.com: "C:\\Program Files\\WinSCP\\winscp.com"
+  //   - Folder path: "D:\\WinSCP" (will automatically append winscp.com)
+  // If not provided, WinSCP will be searched in PATH and common installation locations
+  winscpPath: "C:\\Program Files\\WinSCP",
+
   projects: [
     {
       name: "project 1", // As displayed in the projects list
@@ -67,24 +93,35 @@ Edit `config.json5`:
     secure: true, // Set to true to use SFTP (SSH) instead of FTP
   },
 
-  // Extensions ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway).
-  excludedExtensions: ["qzx", "zxq", "jqv", "vqx"],
+  // File extensions ignored during both analysis AND sync
+  excludedExtensions: ["html", "css", "js"],
 
-  // Folders ignored during ANALYSIS only, to speed analysis up (but they will be synced anyway)
-  excludedFoldersFromAnalysis: ["doNotAnalyzeThisFolder"],
+  // Folders ignored during ANALYSIS only (they will still be synced)
+  excludedFoldersFromAnalysis: ["deployment", "assets", "public"],
 
   // Folders ignored from analysis AND sync
-  excludedFoldersFromSync : ["doNotAnalyzeNorSyncThisFolder"]
+  excludedFoldersFromSync: ["common-slave", "mongodumps"],
 }
 ```
 
 ### Configuration Tips
 
+- **winscpPath**: Path to WinSCP installation (optional if WinSCP is in PATH or default location)
 - **LocalPath**: Full path to your local project folder
-- **FtpRemotePath**: Remote path on the FTP server
+- **RemotePath**: Remote path on the FTP server
 - **Secure**: `true` for SFTP (SSH), `false` for standard FTP
-- **ExcludedExtensions**: File types to skip during analysis (without dots)
-- **ExcludedFolders**: Folders to skip during analysis
+- **ExcludedExtensions**: File types to skip during analysis **and sync** (without dots)
+- **ExcludedFoldersFromAnalysis**: Folders to skip during analysis only (speeds up comparison)
+- **ExcludedFoldersFromSync**: Folders to completely exclude from both analysis and sync
+
+### Sync Behavior
+
+The sync engine uses **WinSCP's synchronization** with the following behavior:
+
+- **Timestamp-based comparison** (`-criteria=time`): Files are compared by modification timestamp
+- **Automatic file deletion** (`-delete` flag): Files deleted locally/remotely are also deleted on the other side
+- **Error tolerance** (`batch continue`): Continues syncing even if some files fail
+- **Git object handling**: `.git/objects` files have their read-only attribute removed before sync to allow proper deletion
 
 ---
 
@@ -123,17 +160,33 @@ The executable will be in `program/Wsync.exe`
 
 ```
 source/
-  ├── App.xaml / App.xaml.cs          # Application entry point
-  ├── MainWindow.xaml / MainWindow.xaml.cs  # Main UI
-  ├── Wsync.csproj                    # Project file
-  └── Services/
-      ├── ConfigService.cs            # Config loading/saving
-      └── FtpService.cs               # SFTP/SSH file comparison
+  ├── App.xaml / App.xaml.cs                  # Application entry point
+  ├── MainWindow.xaml / MainWindow.xaml.cs    # Main UI and sync orchestration
+  ├── Wsync.csproj                            # Project file
+  ├── Services/
+  │   ├── ConfigService.cs                    # Config loading/saving
+  │   ├── FtpService.cs                       # SFTP/SSH file comparison (analysis only)
+  │   └── WinScpService.cs                    # WinSCP wrapper for file synchronization
   └── Models/
-      └── ProjectConfig.cs            # Data models
+      └── ProjectConfig.cs                    # Data models
 ```
 
-### ⚠️ Important Security Notes
+### Architecture
+
+**Wsync** separates concerns into two main components:
+
+1. **Analysis Phase** (FtpService):
+   - Compares files on both sides using SFTP
+   - Supports multiple analysis modes (Full, Quick, Git)
+   - Determines sync recommendation (which direction to sync)
+
+2. **Sync Phase** (WinScpService):
+   - Uses WinSCP command-line tool for actual file synchronization
+   - Handles file deletion with proper attribute handling
+   - Manages exclusions via filemask patterns
+   - Provides real-time progress feedback
+
+---
 
 **DO NOT COMMIT `config.json5`** - This file contains your FTP/SFTP credentials!
 

@@ -93,14 +93,13 @@ public class FtpService
     private const int DecisionThreshold = 3; // For fast mode: decide after finding 3 differing files
 
     // Folders to NEVER sync - these are generated/build artifacts and cache folders
-    // This list is ALWAYS applied to sync operations (not just analysis)
-    private readonly string[] _ignoredFoldersFromSync = new[]
+    // Combined with config excludedFoldersFromSync during initialization
+    private readonly string[] _hardcodedExcludedFolders = new[]
     {
         "node_modules",
         ".svn",
         ".vscode",
         ".github",
-        ".git",
         "bin",
         "obj",
         "dist",
@@ -121,11 +120,11 @@ public class FtpService
     };
 
     // Folders ignored only during ANALYSIS (for UI display purposes + user sync exclusions)
-    // This combines: _ignoredFoldersFromSync + config.excludedFoldersFromAnalysis + config.excludedFoldersFromSync
+    // This combines: _hardcodedExcludedFolders + config.excludedFoldersFromAnalysis + config.excludedFoldersFromSync
     private List<string> _analysisOnlyIgnoredFolders;
     
     // Folders to skip during sync operations
-    // This is: _ignoredFoldersFromSync + config.excludedFoldersFromSync only
+    // This is: _hardcodedExcludedFolders + config.excludedFoldersFromSync only
     private List<string> _syncIgnoredFolders;
 
     public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? excludedFoldersFromAnalysis = null, List<string>? excludedFoldersFromSync = null, AnalysisMode analysisMode = AnalysisMode.Full)
@@ -137,7 +136,7 @@ public class FtpService
         _excludedExtensions = excludedExtensions ?? new List<string>();
 
         // Build analysis ignore list: hardcoded + config analysis + config sync
-        _analysisOnlyIgnoredFolders = new List<string>(_ignoredFoldersFromSync);
+        _analysisOnlyIgnoredFolders = new List<string>(_hardcodedExcludedFolders);
         if (excludedFoldersFromAnalysis != null)
         {
             _analysisOnlyIgnoredFolders.AddRange(excludedFoldersFromAnalysis);
@@ -148,7 +147,7 @@ public class FtpService
         }
         
         // Build sync ignore list: hardcoded + config sync only
-        _syncIgnoredFolders = new List<string>(_ignoredFoldersFromSync);
+        _syncIgnoredFolders = new List<string>(_hardcodedExcludedFolders);
         if (excludedFoldersFromSync != null)
         {
             _syncIgnoredFolders.AddRange(excludedFoldersFromSync);
@@ -839,6 +838,174 @@ public class FtpService
         }
 
         return files;
+    }
+
+    /// <summary>
+    /// Gets all files with relative paths and metadata for INDEPENDENT sync.
+    /// Only excludes: excludedExtensions and excludedFoldersFromSync
+    /// Does NOT use analysis-only exclusions (like .git, deployment/, public/)
+    /// Returns Dictionary mapping relative paths to file metadata
+    /// </summary>
+    private async Task<Dictionary<string, (DateTime LastWriteTimeUtc, long Size)>> GetFilesRecursiveAsync(string rootPath, bool onlyExcludeSync = false)
+    {
+        var result = new Dictionary<string, (DateTime LastWriteTimeUtc, long Size)>();
+        
+        try
+        {
+            var rootDir = new DirectoryInfo(rootPath);
+            if (!rootDir.Exists)
+            {
+                Log($"Directory not found: {rootPath}");
+                return result;
+            }
+            
+            Log($"Scanning local directory: {rootPath}");
+            Log($"Excluded extensions: {string.Join(", ", _excludedExtensions)}");
+            Log($"Excluded folders (sync): {string.Join(", ", _syncIgnoredFolders)}");
+            
+            await ScanDirectoryRecursiveAsync(rootDir, "", result);
+            
+            Log($"Local scan complete: Found {result.Count} files");
+        }
+        catch (Exception ex)
+        {
+            Log($"Error scanning {rootPath}: {ex.Message}");
+        }
+        
+        return result;
+    }
+
+    private async Task ScanDirectoryRecursiveAsync(DirectoryInfo dir, string relativePath, Dictionary<string, (DateTime, long)> result)
+    {
+        try
+        {
+            // Yield periodically
+            await Task.Delay(0);
+            
+            // Get all files in this directory
+            foreach (var file in dir.GetFiles())
+            {
+                // Skip excluded extensions
+                if (_excludedExtensions.Contains(file.Extension.TrimStart('.'), StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                
+                var relPath = string.IsNullOrEmpty(relativePath)
+                    ? file.Name
+                    : relativePath + "/" + file.Name;
+                    
+                result[relPath] = (file.LastWriteTimeUtc, file.Length);
+            }
+            
+            // Recurse into subdirectories
+            foreach (var subdir in dir.GetDirectories())
+            {
+                // Skip folders excluded from sync
+                if (_syncIgnoredFolders.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                
+                var relPath = string.IsNullOrEmpty(relativePath)
+                    ? subdir.Name
+                    : relativePath + "/" + subdir.Name;
+                    
+                await ScanDirectoryRecursiveAsync(subdir, relPath, result);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error scanning directory {dir.FullName}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Gets remote files for INDEPENDENT sync.
+    /// Returns Dictionary mapping relative paths to file metadata
+    /// </summary>
+    private async Task<Dictionary<string, (DateTime LastWriteTimeUtc, long Size)>> GetRemoteFilesRecursiveAsync(string remotePath, bool onlyExcludeSync = false)
+    {
+        var result = new Dictionary<string, (DateTime LastWriteTimeUtc, long Size)>();
+        
+        try
+        {
+            var connectionInfo = new Renci.SshNet.ConnectionInfo(
+                _ftpConfig.Host,
+                _ftpConfig.Port,
+                _ftpConfig.Username,
+                new Renci.SshNet.PasswordAuthenticationMethod(_ftpConfig.Username, _ftpConfig.Password))
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+            
+            using (var client = new SftpClient(connectionInfo))
+            {
+                Log($"Scanning remote directory: {remotePath}");
+                Log($"Excluded folders (sync): {string.Join(", ", _syncIgnoredFolders)}");
+                
+                client.Connect();
+                await ScanRemoteDirectoryRecursiveAsync(client, remotePath, "", result);
+                client.Disconnect();
+                
+                Log($"Remote scan complete: Found {result.Count} files");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error scanning remote {remotePath}: {ex.Message}");
+        }
+        
+        return result;
+    }
+
+    private async Task ScanRemoteDirectoryRecursiveAsync(SftpClient client, string remotePath, string relativePath, Dictionary<string, (DateTime, long)> result)
+    {
+        try
+        {
+            // Yield periodically
+            await Task.Delay(0);
+            
+            var files = client.ListDirectory(remotePath);
+            
+            foreach (var fileAttr in files)
+            {
+                if (fileAttr.Name.StartsWith("."))
+                    continue; // Skip . and ..
+                    
+                var itemPath = remotePath + "/" + fileAttr.Name;
+                var relPath = string.IsNullOrEmpty(relativePath)
+                    ? fileAttr.Name
+                    : relativePath + "/" + fileAttr.Name;
+                
+                if (fileAttr.IsDirectory)
+                {
+                    // Skip folders excluded from sync
+                    if (_syncIgnoredFolders.Contains(fileAttr.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    
+                    await ScanRemoteDirectoryRecursiveAsync(client, itemPath, relPath, result);
+                }
+                else
+                {
+                    // Skip excluded extensions
+                    var ext = Path.GetExtension(fileAttr.Name).TrimStart('.');
+                    if (_excludedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    
+                    var mtime = fileAttr.LastWriteTime.ToUniversalTime();
+                    result[relPath] = (mtime, fileAttr.Length);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error scanning remote directory {remotePath}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -1725,17 +1892,58 @@ public class FtpService
 
     private async Task SyncToFtp(Action<string>? progressCallback = null)
     {
-        Log("SyncToFtp method called");
+        Log("SyncToFtp method called - INDEPENDENT sync (not using analysis results)");
         try
         {
-            // Run analysis and SFTP operations on thread pool to avoid blocking UI thread
+            // Run SFTP operations on thread pool to avoid blocking UI thread
             await Task.Run(async () =>
             {
-                // Before syncing, do a FULL analysis to get all files that need syncing (including .git)
-                Log("Starting full file analysis for sync...");
-                var fullResult = await GetFullAnalysisAsync(CancellationToken.None, includeGit: true);
+                // INDEPENDENT: Scan local and remote filesystems directly
+                // Only exclude: extensions from excludedExtensions + folders from excludedFoldersFromSync
+                Log("Scanning local filesystem for files to upload...");
+                var localFiles = await GetFilesRecursiveAsync(_localPath, onlyExcludeSync: true);
                 
-                Log($"Full analysis complete: {LastComparisonResult?.NewerLocalFiles?.Count ?? 0} files newer locally, {LastComparisonResult?.LocalOnlyFiles?.Count ?? 0} local-only files");
+                Log("Scanning remote filesystem...");
+                var remoteFiles = await GetRemoteFilesRecursiveAsync(_remotePath, onlyExcludeSync: true);
+                
+                // Determine what to upload: files that are newer locally or only exist locally
+                var filesToUpload = new List<string>();
+                var remoteOnlyFiles = new List<string>();
+                
+                Log("Comparing local and remote files...");
+                var remoteSet = new HashSet<string>(remoteFiles.Keys);
+                
+                foreach (var localFile in localFiles)
+                {
+                    var relPath = localFile.Key;
+                    var localInfo = localFile.Value;
+                    
+                    if (remoteSet.Contains(relPath))
+                    {
+                        // File exists on both sides - check if local is newer
+                        var remoteInfo = remoteFiles[relPath];
+                        if (localInfo.LastWriteTimeUtc > remoteInfo.LastWriteTimeUtc)
+                        {
+                            filesToUpload.Add(relPath);
+                        }
+                    }
+                    else
+                    {
+                        // File only exists locally
+                        filesToUpload.Add(relPath);
+                    }
+                }
+                
+                // Remote-only files should be deleted to mirror local
+                foreach (var remoteFile in remoteFiles)
+                {
+                    if (!localFiles.ContainsKey(remoteFile.Key))
+                    {
+                        remoteOnlyFiles.Add(remoteFile.Key);
+                    }
+                }
+                
+                Log($"Upload plan: {filesToUpload.Count} files to upload, {remoteOnlyFiles.Count} files to delete on remote");
 
                 // Create connection info with optimized buffer sizes
                 var connectionInfo = new Renci.SshNet.ConnectionInfo(
@@ -1752,10 +1960,6 @@ public class FtpService
                     Log("Connecting to SFTP server for upload...");
                     client.Connect();
                     Log("Connected to SFTP server");
-
-                    var filesToUpload = LastComparisonResult?.NewerLocalFiles ?? new();
-                    filesToUpload.AddRange(LastComparisonResult?.LocalOnlyFiles ?? new());
-                    var localFilenameMap = LastComparisonResult?.LocalFilenameMap ?? new();
 
                     var totalFiles = filesToUpload.Count;
                     var uploadedCount = 0;
@@ -1782,13 +1986,7 @@ public class FtpService
                     {
                         try
                         {
-                            // Use LocalFilenameMap to get the correct local filename case
-                            var normalizedPath = relativeFile.ToLowerInvariant();
-                            var correctLocalCase = localFilenameMap.ContainsKey(normalizedPath) 
-                                ? localFilenameMap[normalizedPath] 
-                                : relativeFile;
-                            
-                            var localFile = Path.Combine(_localPath, correctLocalCase.Replace('/', Path.DirectorySeparatorChar));
+                            var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
                             var remoteFile = _remotePath + "/" + relativeFile;
 
                             // Ensure remote directory exists
@@ -1876,11 +2074,9 @@ public class FtpService
                 }
 
                 // Delete files that only exist remotely (mirror sync)
-                var filesToDelete = LastComparisonResult?.RemoteOnlyFiles ?? new();
-                var remoteFilenameMapForDeletion = LastComparisonResult?.RemoteFilenameMap ?? new();
-                if (filesToDelete.Count > 0)
+                if (remoteOnlyFiles.Count > 0)
                 {
-                    Log($"Deleting {filesToDelete.Count} remote-only files to mirror local");
+                    Log($"Deleting {remoteOnlyFiles.Count} remote-only files to mirror local");
                     var connectionInfo2 = new Renci.SshNet.ConnectionInfo(
                         _ftpConfig.Host,
                         _ftpConfig.Port,
@@ -1894,22 +2090,16 @@ public class FtpService
                     {
                         client2.Connect();
                         var deletedCount = 0;
-                        foreach (var relativeFile in filesToDelete)
+                        foreach (var relativeFile in remoteOnlyFiles)
                         {
                             try
                             {
-                                // Use RemoteFilenameMap to get the correct remote filename case
-                                var normalizedPath = relativeFile.ToLowerInvariant();
-                                var correctRemoteCase = remoteFilenameMapForDeletion.ContainsKey(normalizedPath) 
-                                    ? remoteFilenameMapForDeletion[normalizedPath] 
-                                    : relativeFile;
-                                
-                                var remoteFile = _remotePath + "/" + correctRemoteCase;
+                                var remoteFile = _remotePath + "/" + relativeFile;
                                 if (client2.Exists(remoteFile))
                                 {
                                     client2.DeleteFile(remoteFile);
                                     deletedCount++;
-                                    progressCallback?.Invoke($"Deleted {deletedCount}/{filesToDelete.Count}: {relativeFile}");
+                                    progressCallback?.Invoke($"Deleted {deletedCount}/{remoteOnlyFiles.Count}: {relativeFile}");
                                     Log($"Deleted: {relativeFile}");
                                 }
                             }
@@ -1920,8 +2110,8 @@ public class FtpService
                             }
                         }
                         client2.Disconnect();
-                        Log($"Deletion complete: {deletedCount}/{filesToDelete.Count} files deleted");
-                        progressCallback?.Invoke($"✓ Deleted {deletedCount}/{filesToDelete.Count} remote-only files");
+                        Log($"Deletion complete: {deletedCount}/{remoteOnlyFiles.Count} files deleted");
+                        progressCallback?.Invoke($"✓ Deleted {deletedCount}/{remoteOnlyFiles.Count} remote-only files");
                     }
                 }
             });
@@ -1944,16 +2134,58 @@ public class FtpService
 
     private async Task SyncToLocal(Action<string>? progressCallback = null)
     {
+        Log("SyncToLocal method called - INDEPENDENT sync (not using analysis results)");
         try
         {
-            // Run analysis and SFTP operations on thread pool to avoid blocking UI thread
+            // Run SFTP operations on thread pool to avoid blocking UI thread
             await Task.Run(async () =>
             {
-                // Before syncing, do a FULL analysis to get all files that need syncing
-                Log("Starting full file analysis for sync...");
-                var fullResult = await GetFullAnalysisAsync(CancellationToken.None, includeGit: true);
+                // INDEPENDENT: Scan local and remote filesystems directly
+                // Only exclude: extensions from excludedExtensions + folders from excludedFoldersFromSync
+                Log("Scanning remote filesystem for files to download...");
+                var remoteFiles = await GetRemoteFilesRecursiveAsync(_remotePath, onlyExcludeSync: true);
                 
-                Log($"Full analysis complete: {LastComparisonResult?.NewerRemoteFiles?.Count ?? 0} files newer remotely, {LastComparisonResult?.RemoteOnlyFiles?.Count ?? 0} remote-only files");
+                Log("Scanning local filesystem...");
+                var localFiles = await GetFilesRecursiveAsync(_localPath, onlyExcludeSync: true);
+                
+                // Determine what to download: files that are newer remotely or only exist remotely
+                var filesToDownload = new List<string>();
+                var localOnlyFiles = new List<string>();
+                
+                Log("Comparing remote and local files...");
+                var localSet = new HashSet<string>(localFiles.Keys);
+                
+                foreach (var remoteFile in remoteFiles)
+                {
+                    var relPath = remoteFile.Key;
+                    var remoteInfo = remoteFile.Value;
+                    
+                    if (localSet.Contains(relPath))
+                    {
+                        // File exists on both sides - check if remote is newer
+                        var localInfo = localFiles[relPath];
+                        if (remoteInfo.LastWriteTimeUtc > localInfo.LastWriteTimeUtc)
+                        {
+                            filesToDownload.Add(relPath);
+                        }
+                    }
+                    else
+                    {
+                        // File only exists remotely
+                        filesToDownload.Add(relPath);
+                    }
+                }
+                
+                // Local-only files should be deleted to mirror remote
+                foreach (var localFile in localFiles)
+                {
+                    if (!remoteFiles.ContainsKey(localFile.Key))
+                    {
+                        localOnlyFiles.Add(localFile.Key);
+                    }
+                }
+                
+                Log($"Download plan: {filesToDownload.Count} files to download, {localOnlyFiles.Count} files to delete locally");
 
                 // Create connection info with optimized buffer sizes
                 var connectionInfo = new Renci.SshNet.ConnectionInfo(
@@ -1971,10 +2203,6 @@ public class FtpService
                     client.Connect();
                     Log("Connected to SFTP server");
 
-                    var filesToDownload = LastComparisonResult?.NewerRemoteFiles ?? new();
-                    filesToDownload.AddRange(LastComparisonResult?.RemoteOnlyFiles ?? new());
-                    var remoteFilenameMap = LastComparisonResult?.RemoteFilenameMap ?? new();
-
                     var totalFiles = filesToDownload.Count;
                     var downloadedCount = 0;
 
@@ -1984,14 +2212,8 @@ public class FtpService
                     {
                         try
                         {
-                            // Use RemoteFilenameMap to get the correct remote filename case
-                            var normalizedPath = relativeFile.ToLowerInvariant();
-                            var correctRemoteCase = remoteFilenameMap.ContainsKey(normalizedPath) 
-                                ? remoteFilenameMap[normalizedPath] 
-                                : relativeFile;
-                            
                             var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
-                            var remoteFile = _remotePath + "/" + correctRemoteCase;
+                            var remoteFile = _remotePath + "/" + relativeFile;
 
                             // Ensure local directory exists
                             var localDir = Path.GetDirectoryName(localFile);
@@ -2091,13 +2313,11 @@ public class FtpService
                 }
 
                 // Delete files that only exist locally (mirror sync)
-                var filesToDelete = LastComparisonResult?.LocalOnlyFiles ?? new();
-                var localFilenameMapForDeletion = LastComparisonResult?.LocalFilenameMap ?? new();
-                if (filesToDelete.Count > 0)
+                if (localOnlyFiles.Count > 0)
                 {
-                    Log($"Deleting {filesToDelete.Count} local-only files to mirror remote");
+                    Log($"Deleting {localOnlyFiles.Count} local-only files to mirror remote");
                     var deletedCount = 0;
-                    foreach (var relativeFile in filesToDelete)
+                    foreach (var relativeFile in localOnlyFiles)
                     {
                         try
                         {
@@ -2107,18 +2327,12 @@ public class FtpService
                                 continue;
                             }
                             
-                            // Use LocalFilenameMap to get the correct local filename case
-                            var normalizedPath = relativeFile.ToLowerInvariant();
-                            var correctLocalCase = localFilenameMapForDeletion.ContainsKey(normalizedPath) 
-                                ? localFilenameMapForDeletion[normalizedPath] 
-                                : relativeFile;
-                            
-                            var localFile = Path.Combine(_localPath, correctLocalCase.Replace('/', Path.DirectorySeparatorChar));
+                            var localFile = Path.Combine(_localPath, relativeFile.Replace('/', Path.DirectorySeparatorChar));
                             if (File.Exists(localFile))
                             {
                                 File.Delete(localFile);
                                 deletedCount++;
-                                progressCallback?.Invoke($"Deleted {deletedCount}/{filesToDelete.Count}: {relativeFile}");
+                                progressCallback?.Invoke($"Deleted {deletedCount}/{localOnlyFiles.Count}: {relativeFile}");
                                 Log($"Deleted: {relativeFile}");
                             }
                         }
@@ -2128,8 +2342,8 @@ public class FtpService
                             progressCallback?.Invoke($"Error deleting {relativeFile}: {ex.Message}");
                         }
                     }
-                    Log($"Deletion complete: {deletedCount}/{filesToDelete.Count} files deleted");
-                    progressCallback?.Invoke($"✓ Deleted {deletedCount}/{filesToDelete.Count} local-only files");
+                    Log($"Deletion complete: {deletedCount}/{localOnlyFiles.Count} files deleted");
+                    progressCallback?.Invoke($"✓ Deleted {deletedCount}/{localOnlyFiles.Count} local-only files");
                 }
             });
         }

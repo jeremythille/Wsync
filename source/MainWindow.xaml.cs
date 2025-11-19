@@ -20,7 +20,7 @@ namespace Wsync;
 public partial class MainWindow : Window
 {
     private readonly ConfigService _configService;
-    private FtpService? _ftpService;
+    private FtpService? _ftpService;  // Used only for analysis/recommendations, not for sync
     private DispatcherTimer? _spinnerTimer;
     private int _spinnerIndex = 0;
     private readonly string[] _spinnerFrames = { "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
@@ -29,9 +29,10 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _analysisCancellationToken;
     private bool _pendingSyncToFtp = false;  // Track which sync action is pending confirmation
     private DateTime _lastUiUpdateTime = DateTime.MinValue;  // Throttle UI updates
-    private const int UiUpdateThrottleMs = 100;  // Update UI max once every 100ms
+    private const int UiUpdateThrottleMs = 20;  // Update UI more frequently during sync
     private int _pendingUiUpdates = 0;  // Track updates waiting in dispatcher queue
     private const int MaxPendingUpdates = 5;  // Max queued updates before skipping
+    private bool _syncInProgress = false;  // Flag to prevent updates after sync completes
 
     public MainWindow()
     {
@@ -243,6 +244,12 @@ public partial class MainWindow : Window
 
     private void UpdateAnalysisStatus(string message)
     {
+        // Ignore updates after sync is complete
+        if (!_syncInProgress)
+        {
+            return;
+        }
+
         // Skip if too many updates are already queued
         if (_pendingUiUpdates >= MaxPendingUpdates)
         {
@@ -634,107 +641,71 @@ public partial class MainWindow : Window
     private async Task PerformSyncAsync(bool isSyncToFtp)
     {
         System.Diagnostics.Debug.WriteLine($"[MainWindow] PerformSyncAsync called with isSyncToFtp={isSyncToFtp}");
-        // Initialize FtpService if not already done
-        if (_ftpService == null)
+        
+        if (ProjectComboBox.SelectedIndex < 0 || ProjectComboBox.SelectedIndex >= _configService.GetProjects().Count)
         {
-            if (ProjectComboBox.SelectedIndex < 0 || ProjectComboBox.SelectedIndex >= _configService.GetProjects().Count)
-            {
-                UpdateStatus("Please select a project first", "", "");
-                return;
-            }
-
-            var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
-            var config = _configService.GetConfig();
-            var ftpConfig = config.Ftp;
-            var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
-
-            _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFoldersFromAnalysis, config.ExcludedFoldersFromSync, mode);
-            _ftpService.SetStatusCallback(UpdateAnalysisStatus);
-            
-            // Need to analyze first to populate LastComparisonResult
-            try
-            {
-                _spinnerIndex = 0;
-                _spinnerTimer?.Start();
-                LoadingSpinner.Visibility = Visibility.Visible;
-                UpdateStatus("Analyzing files...", "", "");
-                
-                SyncLeftButton.IsEnabled = false;
-                SyncRightButton.IsEnabled = false;
-                ProjectComboBox.IsEnabled = false;
-                
-                _analysisCancellationToken?.Cancel();
-                _analysisCancellationToken = new CancellationTokenSource();
-                
-                var recommendation = await _ftpService.GetSyncRecommendationAsync(_analysisCancellationToken.Token);
-                
-                // Don't show results, just proceed to sync
-                _spinnerTimer?.Stop();
-                LoadingSpinner.Visibility = Visibility.Collapsed;
-            }
-            catch (OperationCanceledException)
-            {
-                _spinnerTimer?.Stop();
-                LoadingSpinner.Visibility = Visibility.Collapsed;
-                UpdateStatus("Analysis canceled", "", "");
-                SyncLeftButton.IsEnabled = true;
-                SyncRightButton.IsEnabled = true;
-                ProjectComboBox.IsEnabled = true;
-                return;
-            }
-            catch (Exception ex)
-            {
-                _spinnerTimer?.Stop();
-                LoadingSpinner.Visibility = Visibility.Collapsed;
-                UpdateStatus($"Analysis failed: {ex.Message}", "", "");
-                SyncLeftButton.IsEnabled = true;
-                SyncRightButton.IsEnabled = true;
-                ProjectComboBox.IsEnabled = true;
-                return;
-            }
+            UpdateStatus("Please select a project first", "", "");
+            return;
         }
 
         try
         {
+            var selectedProject = _configService.GetProjects()[ProjectComboBox.SelectedIndex];
+            var config = _configService.GetConfig();
+            var ftpConfig = config.Ftp;
+
+            // Create WinSCP service
+            var winScpService = new WinScpService(
+                ftpConfig,
+                selectedProject.LocalPath,
+                selectedProject.FtpRemotePath,
+                config.ExcludedExtensions,
+                config.ExcludedFoldersFromSync,
+                config.WinScpPath);
+
             // Show loading state
             _spinnerIndex = 0;
             _spinnerTimer?.Start();
             LoadingSpinner.Visibility = Visibility.Visible;
             RecommendationText.Text = isSyncToFtp ? "Uploading files..." : "Downloading files...";
+            _syncInProgress = true;  // Allow progress callbacks
             
             SyncLeftButton.IsEnabled = false;
             SyncRightButton.IsEnabled = false;
+            ProjectComboBox.IsEnabled = false;
+
+            // Setup progress callback
+            Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
 
             // Perform the sync
             if (isSyncToFtp)
             {
-                // Wrap the callback to marshal UI updates to the UI thread
-                Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
-                await _ftpService.SyncToFtpAsync(uiCallback);
+                await winScpService.SyncToFtpAsync(uiCallback);
             }
             else
             {
-                // Wrap the callback to marshal UI updates to the UI thread
-                Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
-                await _ftpService.SyncToLocalAsync(uiCallback);
+                await winScpService.SyncToLocalAsync(uiCallback);
             }
 
+            _syncInProgress = false;  // Stop accepting progress updates
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
 
-            // Show completion message (include timestamp)
-            UpdateStatus($"Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
+            // Show completion message
+            UpdateStatus($"✓ Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;
         }
         catch (Exception ex)
         {
+            _syncInProgress = false;  // Stop accepting progress updates
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
-            UpdateStatus($"Sync failed: {ex.Message}", "", "");
+            UpdateStatus($"✗ Sync failed: {ex.Message}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
+            ProjectComboBox.IsEnabled = true;
         }
     }
 

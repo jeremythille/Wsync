@@ -90,4 +90,11 @@ public class AppConfig
     /// </summary>
     [Newtonsoft.Json.JsonProperty("excludedFoldersFromSync")]
     public List<string> ExcludedFoldersFromSync { get; set; } = new();
+    
+    /// <summary>
+    /// Optional path to WinSCP executable (winscp.com).
+    /// If not provided, WinSCP will be searched in PATH and common installation locations.
+    /// </summary>
+    [Newtonsoft.Json.JsonProperty("winscpPath")]
+    public string? WinScpPath { get; set; }
 }
