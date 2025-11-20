@@ -125,6 +125,7 @@
                 <TextBlock x:Name="AnalysisSpinnerText" Text="⠙" FontSize="14" Foreground="#0078D4" VerticalAlignment="Center"/>
             </Grid>
 
+            <!-- Analysis Mode Selector -->
             <ComboBox Grid.Column="1"
                       x:Name="ModeComboBox"
                       Height="32"
@@ -140,6 +141,7 @@
                 <ComboBoxItem Content="Git mode (newer commit)" Tag="Git"/>
             </ComboBox>
             
+            <!-- Abort Button -->
             <Button Grid.Column="2"
                     x:Name="AbortAnalysisButton"
                     Padding="8,4"
@@ -205,6 +207,23 @@
                         Cursor="Hand"
                         Click="SyncLeftButton_Click">
                     ←
+                </Button>
+                
+                <!-- Stop Transfer Button - appears during sync -->
+                <Button x:Name="StopTransferButton"
+                        Height="36"
+                        ToolTip="Stop the current transfer"
+                        Background="#D32F2F"
+                        Foreground="White"
+                        FontSize="11"
+                        FontWeight="SemiBold"
+                        Padding="8,4"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        Click="StopTransferButton_Click"
+                        Visibility="Collapsed"
+                        Margin="0,8,0,0">
+                    ⏹ Stop
                 </Button>
             </StackPanel>
 

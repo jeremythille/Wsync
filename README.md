@@ -86,21 +86,30 @@ Edit `config.json5`:
 
   ftp: {
     host: "11.22.33.44",
-    port: 22, // Use 21 for standard FTP, 22 for SFTP
+    port: 22, // 22 for SFTP (recommended), 21 for standard FTP
     username: "user",
     password: "pwd",
-    passiveMode: false, // Usually true for FTP connections
-    secure: true, // Set to true to use SFTP (SSH) instead of FTP
+    passiveMode: false, // Only relevant for FTP. Set to true if FTP is behind a firewall.
+    secure: true, // true for SFTP/SSH (recommended), false for standard FTP
   },
 
-  // File extensions ignored during both analysis AND sync
-  excludedExtensions: ["html", "css", "js"],
+  // File extensions ignored during ANALYSIS only (they will still be synced)
+  excludedExtensionsFromAnalysis: ["html", "css", "js", "txt"],
+
+  // File extensions ignored from analysis AND sync
+  excludedExtensionsFromSync: [],
+
+  // Specific filenames ignored during ANALYSIS only (case insensitive, they will still be synced)
+  excludedFilesFromAnalysis: ["readme.txt", ".ds_store", "thumbs.db"],
+
+  // Specific filenames ignored from analysis AND sync (case insensitive)
+  excludedFilesFromSync: [],
 
   // Folders ignored during ANALYSIS only (they will still be synced)
   excludedFoldersFromAnalysis: ["deployment", "assets", "public"],
 
   // Folders ignored from analysis AND sync
-  excludedFoldersFromSync: ["common-slave", "mongodumps"],
+  excludedFoldersFromSync: ["common-slave", "mongodumps", "output"],
 }
 ```
 
@@ -109,10 +118,15 @@ Edit `config.json5`:
 - **winscpPath**: Path to WinSCP installation (optional if WinSCP is in PATH or default location)
 - **LocalPath**: Full path to your local project folder
 - **RemotePath**: Remote path on the FTP server
-- **Secure**: `true` for SFTP (SSH), `false` for standard FTP
-- **ExcludedExtensions**: File types to skip during analysis **and sync** (without dots)
-- **ExcludedFoldersFromAnalysis**: Folders to skip during analysis only (speeds up comparison)
-- **ExcludedFoldersFromSync**: Folders to completely exclude from both analysis and sync
+- **Port**: 22 for SFTP (recommended, secure), 21 for standard FTP
+- **Secure**: `true` for SFTP/SSH (recommended), `false` for standard FTP. Used by both analysis and sync phases.
+- **PassiveMode**: Only relevant for standard FTP (not SFTP). Set to `true` if your FTP server is behind a firewall.
+- **ExcludedExtensionsFromAnalysis**: File extensions to skip during analysis only (speeds up comparison, they will still be synced). Case-insensitive.
+- **ExcludedExtensionsFromSync**: File extensions to completely exclude from both analysis and sync. Case-insensitive.
+- **ExcludedFilesFromAnalysis**: Specific filenames to skip during analysis only (case-insensitive, they will still be synced). Useful for hiding noisy files like `readme.txt`, `.DS_Store`, `Thumbs.db`
+- **ExcludedFilesFromSync**: Specific filenames to completely exclude from both analysis and sync (case-insensitive).
+- **ExcludedFoldersFromAnalysis**: Folders to skip during analysis only (speeds up comparison, they will still be synced). Excludes matching folder names at any depth.
+- **ExcludedFoldersFromSync**: Folders to completely exclude from both analysis and sync. Excludes matching folder names at any depth.
 
 ### Sync Behavior
 

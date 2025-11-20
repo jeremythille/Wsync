@@ -17,6 +17,7 @@ public class WinScpService
     private readonly List<string> _excludedFoldersFromSync;
     private readonly string? _winscpPath;
     private Action<string>? _statusCallback;
+    private Process? _currentProcess;  // Track running process for cancellation
 
     /// <summary>
     /// Common build artifacts, cache, and IDE folders that should never be synced.
@@ -82,6 +83,10 @@ public class WinScpService
     /// </summary>
     public async Task SyncToFtpAsync(Action<string>? progressCallback = null)
     {
+        // Before sync, remove ReadOnly attributes from all .git/objects files
+        // This allows WinSCP to delete them if needed during sync
+        await RemoveReadOnlyAttributesAsync(progressCallback);
+        
         var script = GenerateScript(isUpload: true);
         await ExecuteScriptAsync(script, progressCallback);
     }
@@ -126,15 +131,13 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            // -verbose: show individual file transfers
-            sb.AppendLine($"synchronize remote -delete -criteria=time -verbose -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            sb.AppendLine($"synchronize remote -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            // -verbose: show individual file transfers
-            sb.AppendLine($"synchronize local -delete -criteria=time -verbose -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            sb.AppendLine($"synchronize local -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
@@ -160,17 +163,19 @@ public class WinScpService
 
     /// <summary>
     /// Generates WinSCP filemask for exclusions
-    /// Format: |excluded1;excluded2;*.ext;*.log
+    /// Format: |excluded1/;excluded2/;*.ext
+    /// Trailing slash on directories makes them recursive automatically
     /// </summary>
     private string GenerateFilemask()
     {
         var exclusions = new List<string>();
 
-        // Add excluded folders - use both folder name and folder/* pattern to ensure they're fully excluded
+        // Add excluded folders with trailing slash for recursive matching
         foreach (var folder in _excludedFoldersFromSync)
         {
-            exclusions.Add($"{folder}");      // Exclude the folder itself
-            exclusions.Add($"{folder}/*");    // Exclude all contents
+            // Trailing / makes WinSCP match this directory recursively
+            // and exclude everything inside it
+            exclusions.Add($"{folder}/");
         }
 
         // Add excluded extensions
@@ -179,11 +184,13 @@ public class WinScpService
             exclusions.Add($"*.{ext}");
         }
 
-        // WinSCP filemask format: |exclude1;exclude2;exclude3
+        // WinSCP filemask format: |exclude1/;exclude2/;*.ext
         if (exclusions.Count == 0)
             return "";
 
-        return "|" + string.Join(";", exclusions);
+        var filemask = "|" + string.Join(";", exclusions);
+        Log($"Generated filemask with {exclusions.Count} patterns: {filemask}");
+        return filemask;
     }
 
     /// <summary>
@@ -262,38 +269,51 @@ public class WinScpService
             if (process == null)
                 throw new Exception("Failed to start WinSCP process");
 
-            var output = new StringBuilder();
-            var error = new StringBuilder();
+            // Track process for potential cancellation
+            _currentProcess = process;
 
-            // Capture output asynchronously
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-
-            await Task.WhenAll(outputTask, errorTask);
-
-            var stdout = outputTask.Result;
-            var stderr = errorTask.Result;
-            // Log output - filter out only connection/auth messages, show everything else
-            if (!string.IsNullOrEmpty(stdout))
+            try
             {
-                foreach (var line in stdout.Split('\n'))
+                var output = new StringBuilder();
+                var error = new StringBuilder();
+
+                // Capture output asynchronously
+                var outputTask = process.StandardOutput.ReadToEndAsync();
+                var errorTask = process.StandardError.ReadToEndAsync();
+
+                await Task.WhenAll(outputTask, errorTask);
+
+                var stdout = outputTask.Result;
+                var stderr = errorTask.Result;
+                
+                // Log output - filter out only connection/auth messages, show everything else
+                if (!string.IsNullOrEmpty(stdout))
                 {
-                    if (!string.IsNullOrEmpty(line))
+                    var hasContent = false;
+                    foreach (var line in stdout.Split('\n'))
                     {
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
+                            
+                        var trimmedLine = line.Trim();
+                        
                         // Skip only the verbose WinSCP connection/authentication setup messages
-                        if (line.Contains("Searching for host") || 
-                            line.Contains("Connecting to host") ||
-                            line.Contains("Authenticating") ||
-                            line.Contains("Using username") ||
-                            line.Contains("Authenticating with") ||
-                            line.Contains("Authenticated") ||
-                            line.Contains("Starting the session") ||
-                            line.Contains("Session started") ||
-                            line.Contains("Active session") ||
-                            line.Contains("batch") ||
-                            line.Contains("confirm") ||
-                            line.Contains("Using configured") ||
-                            line.Contains("echo"))
+                        if (trimmedLine.Contains("Searching for host") || 
+                            trimmedLine.Contains("Connecting to host") ||
+                            trimmedLine.Contains("Authenticating") ||
+                            trimmedLine.Contains("Using username") ||
+                            trimmedLine.Contains("Authenticating with") ||
+                            trimmedLine.Contains("Authenticated") ||
+                            trimmedLine.Contains("Starting the session") ||
+                            trimmedLine.Contains("Session started") ||
+                            trimmedLine.Contains("Active session") ||
+                            trimmedLine.Contains("batch") ||
+                            trimmedLine.Contains("confirm") ||
+                            trimmedLine.Contains("Using configured") ||
+                            trimmedLine.Contains("echo") ||
+                            trimmedLine.Contains("Transfer Settings") ||
+                            trimmedLine.Contains("Synchronization options") ||
+                            trimmedLine.Contains("factory defaults"))
                         {
                             Log(line); // Still log to file for debugging
                             // But don't show in UI
@@ -303,68 +323,102 @@ public class WinScpService
                             // Show everything else: file transfers, comparison, sync messages
                             Log(line);
                             progressCallback?.Invoke(line);
+                            hasContent = true;
+                        }
+                    }
+                    
+                    // If nothing was shown (no files to sync), show a message
+                    if (!hasContent && stdout.Contains("Nothing to synchronize"))
+                    {
+                        Log("No files to synchronize");
+                        progressCallback?.Invoke("No files to synchronize");
+                    }
+                }
+
+                // Log errors
+                if (!string.IsNullOrEmpty(stderr))
+                {
+                    foreach (var line in stderr.Split('\n'))
+                    {
+                        if (!string.IsNullOrEmpty(line))
+                        {
+                            Log($"[ERROR] {line}");
+                            progressCallback?.Invoke($"⚠ {line}");
                         }
                     }
                 }
-            }
 
-            // Log errors
-            if (!string.IsNullOrEmpty(stderr))
-            {
-                foreach (var line in stderr.Split('\n'))
+                // Wait for process to complete
+                process.WaitForExit();
+
+                // Log the exit code
+                Log($"WinSCP exited with code {process.ExitCode}");
+
+                // Check exit code - WinSCP returns 0 on complete success, non-zero if there were any errors
+                // But it still performs the sync, so we report partial success
+                if (process.ExitCode != 0)
                 {
-                    if (!string.IsNullOrEmpty(line))
+                    // Check if errors are ignorable (access denied on file operations, typically on non-existent or locked files)
+                    var hasIgnorableErrors = false;
+                    if (stdout.Contains("Error deleting file") && stdout.Contains("Access is denied"))
                     {
-                        Log($"[ERROR] {line}");
-                        progressCallback?.Invoke($"⚠ {line}");
+                        // Access denied when deleting is typically because:
+                        // 1. File doesn't exist anymore (already deleted in previous sync)
+                        // 2. File is locked by another process
+                        // Both are acceptable in a sync operation
+                        hasIgnorableErrors = true;
+                        Log("ℹ Note: Some files couldn't be deleted (may already be deleted or locked), but sync proceeded");
+                    }
+                    
+                    // Extract summary from output to determine if sync actually happened
+                    var hasSyncMessage = stdout.Contains("Synchronizing") || 
+                                       stdout.Contains("transferred") ||
+                                       stdout.Contains("Local") ||
+                                       stdout.Contains("deleted");
+                    
+                    if (hasSyncMessage && hasIgnorableErrors)
+                    {
+                        // Sync succeeded with only ignorable errors
+                        Log("✓ Sync completed successfully!");
+                        progressCallback?.Invoke("✓ Sync completed successfully!");
+                    }
+                    else if (hasSyncMessage)
+                    {
+                        Log("⚠ WinSCP completed with some errors, but files were transferred");
+                        progressCallback?.Invoke("✓ Sync completed (with warnings - some files may not have been synced)");
+                        Log("Note: Check the log above for which files had issues");
+                    }
+                    else
+                    {
+                        throw new Exception($"WinSCP exited with code {process.ExitCode}. Check log for details.");
                     }
                 }
             }
-
-            // Wait for process to complete
-            process.WaitForExit();
-
-            // Log the exit code
-            Log($"WinSCP exited with code {process.ExitCode}");
-
-            // Check exit code - WinSCP returns 0 on complete success, non-zero if there were any errors
-            // But it still performs the sync, so we report partial success
-            if (process.ExitCode != 0)
+            finally
             {
-                // Check if errors are ignorable (access denied on file operations, typically on non-existent or locked files)
-                var hasIgnorableErrors = false;
-                if (stdout.Contains("Error deleting file") && stdout.Contains("Access is denied"))
-                {
-                    // Access denied when deleting is typically because:
-                    // 1. File doesn't exist anymore (already deleted in previous sync)
-                    // 2. File is locked by another process
-                    // Both are acceptable in a sync operation
-                    hasIgnorableErrors = true;
-                    Log("ℹ Note: Some files couldn't be deleted (may already be deleted or locked), but sync proceeded");
-                }
-                
-                // Extract summary from output to determine if sync actually happened
-                var hasSyncMessage = stdout.Contains("Synchronizing") || 
-                                   stdout.Contains("transferred") ||
-                                   stdout.Contains("Local") ||
-                                   stdout.Contains("deleted");
-                
-                if (hasSyncMessage && hasIgnorableErrors)
-                {
-                    // Sync succeeded with only ignorable errors
-                    Log("✓ Sync completed successfully!");
-                    progressCallback?.Invoke("✓ Sync completed successfully!");
-                }
-                else if (hasSyncMessage)
-                {
-                    Log("⚠ WinSCP completed with some errors, but files were transferred");
-                    progressCallback?.Invoke("✓ Sync completed (with warnings - some files may not have been synced)");
-                    Log("Note: Check the log above for which files had issues");
-                }
-                else
-                {
-                    throw new Exception($"WinSCP exited with code {process.ExitCode}. Check log for details.");
-                }
+                // Clear the process reference when done
+                _currentProcess = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stops the current transfer by terminating the WinSCP process
+    /// </summary>
+    public void StopTransfer()
+    {
+        if (_currentProcess != null && !_currentProcess.HasExited)
+        {
+            try
+            {
+                Log("⏹ Stopping WinSCP transfer...");
+                _currentProcess.Kill();
+                _currentProcess.WaitForExit();
+                Log("Transfer stopped");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error stopping transfer: {ex.Message}");
             }
         }
     }
@@ -454,7 +508,7 @@ public class WinScpService
     /// Removes ReadOnly attributes from all .git/objects files to allow deletion during sync
     /// Does NOT delete files - just removes the attribute that prevents deletion
     /// </summary>
-    private async Task RemoveReadOnlyAttributesAsync(Action<string>? progressCallback = null)
+    private Task RemoveReadOnlyAttributesAsync(Action<string>? progressCallback = null)
     {
         try
         {
@@ -462,7 +516,7 @@ public class WinScpService
             
             if (!Directory.Exists(gitObjectsPath))
             {
-                return; // No .git/objects folder
+                return Task.CompletedTask; // No .git/objects folder
             }
 
             var objectFiles = Directory.GetFiles(gitObjectsPath, "*", SearchOption.AllDirectories);
@@ -489,10 +543,13 @@ public class WinScpService
             {
                 Log($"Removed ReadOnly attribute from {modifiedCount} .git/objects files");
             }
+
+            return Task.CompletedTask;
         }
         catch (Exception ex)
         {
             Log($"Error removing ReadOnly attributes: {ex.Message}");
+            return Task.CompletedTask;
         }
     }
 }

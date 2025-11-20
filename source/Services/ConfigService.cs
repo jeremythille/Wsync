@@ -76,6 +76,8 @@ public class ConfigService
                     foreach (var proj in _config.Projects)
                     {
                         Log($"Project: {proj.Name}");
+                        Log($"  - LocalPath: {proj.LocalPath}");
+                        Log($"  - FtpRemotePath: '{proj.FtpRemotePath}'");
                         var validationError = proj.Validate();
                         if (validationError != null)
                         {

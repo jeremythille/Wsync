@@ -82,6 +82,8 @@ public class FtpService
     public ComparisonResult? LastComparisonResult { get; private set; }
     private SshClient? _sshClientCache; // Reusable SSH client for hash computation
     private readonly List<string> _excludedExtensions;
+    private List<string> _excludedFilesFromAnalysis;
+    private List<string> _excludedFilesFromSync;
     
     // Parallel SSH connection pool
     private readonly List<SshClient> _sshConnectionPool = new();
@@ -127,13 +129,27 @@ public class FtpService
     // This is: _defaultExcludedFolders + config.excludedFoldersFromSync only
     private List<string> _excludedFoldersFromSync;
 
-    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensions = null, List<string>? excludedFoldersFromAnalysis = null, List<string>? excludedFoldersFromSync = null, AnalysisMode analysisMode = AnalysisMode.Full)
+    public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensionsFromAnalysis = null, List<string>? excludedExtensionsFromSync = null, List<string>? excludedFilesFromAnalysis = null, List<string>? excludedFilesFromSync = null, List<string>? excludedFoldersFromAnalysis = null, List<string>? excludedFoldersFromSync = null, AnalysisMode analysisMode = AnalysisMode.Full)
     {
         _ftpConfig = ftpConfig;
         _localPath = localPath;
         _remotePath = remotePath;
         _analysisMode = analysisMode;
-        _excludedExtensions = excludedExtensions ?? new List<string>();
+        
+        // Build extension ignore list for analysis: both analysis and sync extensions
+        _excludedExtensions = new List<string>();
+        if (excludedExtensionsFromAnalysis != null)
+        {
+            _excludedExtensions.AddRange(excludedExtensionsFromAnalysis);
+        }
+        if (excludedExtensionsFromSync != null)
+        {
+            _excludedExtensions.AddRange(excludedExtensionsFromSync);
+        }
+
+        // Build file ignore lists - make copies and normalize to lowercase for case-insensitive comparison
+        _excludedFilesFromAnalysis = new List<string>(excludedFilesFromAnalysis?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
+        _excludedFilesFromSync = new List<string>(excludedFilesFromSync?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
 
         // Build analysis ignore list: default + config analysis + config sync
         _excludedFoldersFromAnalysis = new List<string>(_defaultExcludedFolders);
@@ -155,15 +171,46 @@ public class FtpService
     }
 
     /// <summary>
-    /// Checks if a file should be excluded based on its extension
+    /// Checks if a file should be excluded from analysis based on its extension and filename
     /// </summary>
-    private bool IsFileExcluded(string filename)
+    private bool IsFileExcludedFromAnalysis(string filename)
     {
+        var filenameOnly = Path.GetFileName(filename).ToLowerInvariant();
+        
+        // Check by filename first (case insensitive)
+        if (_excludedFilesFromAnalysis.Contains(filenameOnly))
+            return true;
+        
+        // Check by extension
         if (_excludedExtensions.Count == 0)
             return false;
 
         var extension = Path.GetExtension(filename).TrimStart('.').ToLowerInvariant();
         return _excludedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Checks if a file should be excluded from sync based on its extension and filename
+    /// </summary>
+    private bool IsFileExcludedFromSync(string filename)
+    {
+        var filenameOnly = Path.GetFileName(filename).ToLowerInvariant();
+        
+        // Check by filename first (case insensitive)
+        if (_excludedFilesFromSync.Contains(filenameOnly))
+            return true;
+        
+        // Check extension only from excludedExtensionsFromSync (not from analysis exclusions)
+        // This is handled elsewhere - this method only checks file name exclusions
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if a file should be excluded based on its extension (deprecated - use IsFileExcludedFromAnalysis)
+    /// </summary>
+    private bool IsFileExcluded(string filename)
+    {
+        return IsFileExcludedFromAnalysis(filename);
     }
 
     /// <summary>
@@ -1427,21 +1474,21 @@ public class FtpService
                     {
                         // Local is newer (modified more recently)
                         newerLocal++;
-                        newerLocalFiles.Add(remoteKey);
+                        if (remoteKey != null) newerLocalFiles.Add(remoteKey);
                         LogDetailedToFileOnly($"  → Local file is newer (modified {Math.Abs(timeDiff.TotalMinutes):F0}min after remote)");
                     }
                     else if (timeDiff < TimeSpan.Zero)
                     {
                         // Remote is newer (modified more recently)
                         newerRemote++;
-                        newerRemoteFiles.Add(remoteKey);
+                        if (remoteKey != null) newerRemoteFiles.Add(remoteKey);
                         LogDetailedToFileOnly($"  → Remote file is newer (modified {Math.Abs(timeDiff.TotalMinutes):F0}min after local)");
                     }
                     else
                     {
                         // Same timestamp, different size - unusual, but default to remote (safer)
                         newerRemote++;
-                        newerRemoteFiles.Add(remoteKey);
+                        if (remoteKey != null) newerRemoteFiles.Add(remoteKey);
                         LogDetailedToFileOnly($"  → Same timestamp but different size - favoring remote");
                     }
                     
@@ -1494,14 +1541,14 @@ public class FtpService
                     {
                         // Local is newer (modified more recently)
                         newerLocal++;
-                        newerLocalFiles.Add(remoteKey);
+                        if (remoteKey != null) newerLocalFiles.Add(remoteKey);
                         LogDetailedToFileOnly($"  → Local version is newer ({timeDiff.TotalMinutes:F0}min more recent)");
                     }
                     else
                     {
                         // Remote is newer (modified more recently)
                         newerRemote++;
-                        newerRemoteFiles.Add(remoteKey);
+                        if (remoteKey != null) newerRemoteFiles.Add(remoteKey);
                         LogDetailedToFileOnly($"  → Remote version is newer ({Math.Abs(timeDiff.TotalMinutes):F0}min more recent)");
                     }
                     

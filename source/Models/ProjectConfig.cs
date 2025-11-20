@@ -71,8 +71,30 @@ public class AppConfig
     [Newtonsoft.Json.JsonProperty("ftp")]
     public FtpConnectionConfig Ftp { get; set; } = new();
     
-    [Newtonsoft.Json.JsonProperty("excludedExtensions")]
-    public List<string> ExcludedExtensions { get; set; } = new();
+    [Newtonsoft.Json.JsonProperty("excludedExtensionsFromAnalysis")]
+    public List<string> ExcludedExtensionsFromAnalysis { get; set; } = new();
+    
+    /// <summary>
+    /// Extensions to exclude from SYNC operations.
+    /// These files will NOT be synced.
+    /// </summary>
+    [Newtonsoft.Json.JsonProperty("excludedExtensionsFromSync")]
+    public List<string> ExcludedExtensionsFromSync { get; set; } = new();
+    
+    /// <summary>
+    /// Specific filenames to exclude from ANALYSIS display purposes ONLY (case insensitive).
+    /// These files WILL still be synced - this only affects the quick-view analysis UI.
+    /// Use this to hide specific noisy files from analysis view.
+    /// </summary>
+    [Newtonsoft.Json.JsonProperty("excludedFilesFromAnalysis")]
+    public List<string> ExcludedFilesFromAnalysis { get; set; } = new();
+    
+    /// <summary>
+    /// Specific filenames to exclude from SYNC operations (case insensitive).
+    /// These files will NOT be synced.
+    /// </summary>
+    [Newtonsoft.Json.JsonProperty("excludedFilesFromSync")]
+    public List<string> ExcludedFilesFromSync { get; set; } = new();
     
     /// <summary>
     /// Folders to exclude from ANALYSIS display purposes ONLY.

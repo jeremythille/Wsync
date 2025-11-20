@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private int _pendingUiUpdates = 0;  // Track updates waiting in dispatcher queue
     private const int MaxPendingUpdates = 5;  // Max queued updates before skipping
     private bool _syncInProgress = false;  // Flag to prevent updates after sync completes
+    private WinScpService? _currentWinScpService;  // Track the service to allow cancellation
+    private bool _syncStoppedByUser = false;  // Track if user stopped the sync
 
     public MainWindow()
     {
@@ -157,7 +159,7 @@ public partial class MainWindow : Window
         var ftpConfig = config.Ftp;
         var mode = (AnalysisMode)ModeComboBox.SelectedIndex;
 
-        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensions, config.ExcludedFoldersFromAnalysis, config.ExcludedFoldersFromSync, mode);
+        _ftpService = new FtpService(ftpConfig, selectedProject.LocalPath, selectedProject.FtpRemotePath, config.ExcludedExtensionsFromAnalysis, config.ExcludedExtensionsFromSync, config.ExcludedFilesFromAnalysis, config.ExcludedFilesFromSync, config.ExcludedFoldersFromAnalysis, config.ExcludedFoldersFromSync, mode);
         _ftpService.SetStatusCallback(UpdateAnalysisStatus);
 
         try
@@ -570,7 +572,7 @@ public partial class MainWindow : Window
         SyncRightButton.ToolTip = "Sync from Desktop to FTP";
     }
 
-    private async void SyncLeftButton_Click(object sender, RoutedEventArgs e)
+    private void SyncLeftButton_Click(object sender, RoutedEventArgs e)
     {
         _pendingSyncToFtp = false;
         ConfirmationMessage.Text = "Download files from FTP to Desktop?";
@@ -620,7 +622,7 @@ public partial class MainWindow : Window
         _analysisCancellationToken?.Cancel();
     }
 
-    private async void SyncRightButton_Click(object sender, RoutedEventArgs e)
+    private void SyncRightButton_Click(object sender, RoutedEventArgs e)
     {
         _pendingSyncToFtp = true;
         ConfirmationMessage.Text = "Upload files from Desktop to FTP?";
@@ -659,20 +661,28 @@ public partial class MainWindow : Window
                 ftpConfig,
                 selectedProject.LocalPath,
                 selectedProject.FtpRemotePath,
-                config.ExcludedExtensions,
+                config.ExcludedExtensionsFromSync,
                 config.ExcludedFoldersFromSync,
                 config.WinScpPath);
+
+            // Track the service for cancellation
+            _currentWinScpService = winScpService;
+            _syncStoppedByUser = false;  // Reset the flag
 
             // Show loading state
             _spinnerIndex = 0;
             _spinnerTimer?.Start();
             LoadingSpinner.Visibility = Visibility.Visible;
-            RecommendationText.Text = isSyncToFtp ? "Uploading files..." : "Downloading files...";
+            RecommendationText.Text = isSyncToFtp ? "Mirroring local to FTP..." : "Mirroring FTP to local...";
             _syncInProgress = true;  // Allow progress callbacks
             
             SyncLeftButton.IsEnabled = false;
             SyncRightButton.IsEnabled = false;
             ProjectComboBox.IsEnabled = false;
+            
+            // Show stop button
+            StopTransferButton.Visibility = Visibility.Visible;
+            StopTransferButton.IsEnabled = true;
 
             // Setup progress callback
             Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
@@ -690,9 +700,18 @@ public partial class MainWindow : Window
             _syncInProgress = false;  // Stop accepting progress updates
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
+            StopTransferButton.Visibility = Visibility.Collapsed;
+            _currentWinScpService = null;
 
-            // Show completion message
-            UpdateStatus($"✓ Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
+            // Show completion message based on how sync ended
+            if (_syncStoppedByUser)
+            {
+                UpdateStatus($"⏹ Sync interrupted by user at {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
+            }
+            else
+            {
+                UpdateStatus($"✓ Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
+            }
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
             ProjectComboBox.IsEnabled = true;
@@ -702,6 +721,8 @@ public partial class MainWindow : Window
             _syncInProgress = false;  // Stop accepting progress updates
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
+            StopTransferButton.Visibility = Visibility.Collapsed;
+            _currentWinScpService = null;
             UpdateStatus($"✗ Sync failed: {ex.Message}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;
@@ -764,6 +785,19 @@ public partial class MainWindow : Window
         if (ModeComboBox.SelectedIndex >= 0)
         {
             _ = AnalyzeSyncStatusAsync();
+        }
+    }
+
+    private void StopTransferButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Stop the current transfer
+        if (_currentWinScpService != null)
+        {
+            System.Diagnostics.Debug.WriteLine("[MainWindow] StopTransferButton clicked - stopping transfer");
+            _syncStoppedByUser = true;  // Mark that user stopped the sync
+            _currentWinScpService.StopTransfer();
+            StopTransferButton.IsEnabled = false;
+            UpdateAnalysisStatus("Transfer stopped by user");
         }
     }
 
