@@ -18,6 +18,35 @@ public class WinScpService
     private readonly string? _winscpPath;
     private Action<string>? _statusCallback;
 
+    /// <summary>
+    /// Common build artifacts, cache, and IDE folders that should never be synced.
+    /// Combined with config excludedFoldersFromSync during initialization.
+    /// </summary>
+    private readonly string[] _defaultExcludedFolders = new[]
+    {
+        "node_modules",
+        ".svn",
+        ".vscode",
+        ".github",
+        "bin",
+        "obj",
+        "dist",
+        "build",
+        ".vs",
+        "packages",
+        "__pycache__",
+        ".pytest_cache",
+        "venv",
+        "env",
+        ".angular",
+        ".idea",
+        ".DS_Store",
+        "Thumbs.db",
+        "non-code",
+        "test-results",
+        "playwright-report"
+    };
+
     public WinScpService(
         FtpConnectionConfig ftpConfig,
         string localPath,
@@ -32,7 +61,14 @@ public class WinScpService
         _localPath = Path.GetFullPath(localPath);  // Windows format with backslashes
         _remotePath = remotePath.Replace("\\", "/");  // Unix format with forward slashes
         _excludedExtensions = excludedExtensions ?? new List<string>();
-        _excludedFoldersFromSync = excludedFoldersFromSync ?? new List<string>();
+        
+        // Combine default excluded folders with config-provided folders
+        _excludedFoldersFromSync = new List<string>(_defaultExcludedFolders);
+        if (excludedFoldersFromSync != null)
+        {
+            _excludedFoldersFromSync.AddRange(excludedFoldersFromSync);
+        }
+        
         _winscpPath = winscpPath;
     }
 
@@ -90,13 +126,15 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            sb.AppendLine($"synchronize remote -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -verbose: show individual file transfers
+            sb.AppendLine($"synchronize remote -delete -criteria=time -verbose -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            sb.AppendLine($"synchronize local -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -verbose: show individual file transfers
+            sb.AppendLine($"synchronize local -delete -criteria=time -verbose -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
