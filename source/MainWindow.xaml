@@ -247,6 +247,7 @@
 
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
@@ -255,8 +256,15 @@
                 <TextBlock x:Name="SpinnerText" Text="⠙" FontSize="18" Foreground="#0078D4"/>
             </Grid>
 
+            <!-- Log File Link -->
+            <TextBlock Grid.Row="1" Margin="3,3,3,0" FontSize="9">
+                <Hyperlink x:Name="OpenLogLink" Click="OpenLogLink_Click" Foreground="#0078D4">
+                    Open full log
+                </Hyperlink>
+            </TextBlock>
+
             <!-- Single Content TextBox - shows logs, then recommendations -->
-            <TextBox Grid.Row="1"
+            <TextBox Grid.Row="2"
                      x:Name="RecommendationText" 
                      Text="Select a project and click Refresh to compare files." 
                      FontSize="11" 

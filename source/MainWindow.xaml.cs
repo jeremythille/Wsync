@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -798,6 +799,30 @@ public partial class MainWindow : Window
             _currentWinScpService.StopTransfer();
             StopTransferButton.IsEnabled = false;
             UpdateAnalysisStatus("Transfer stopped by user");
+        }
+    }
+
+    private void OpenLogLink_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wsync.log");
+            if (System.IO.File.Exists(logPath))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = logPath,
+                    UseShellExecute = true
+                });
+            }
+            else
+            {
+                MessageBox.Show("Log file not found: " + logPath, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Could not open log file: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
