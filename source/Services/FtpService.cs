@@ -149,7 +149,13 @@ public class FtpService
         }
 
         // Build file ignore lists - make copies and normalize to lowercase for case-insensitive comparison
+        // Analysis uses both analysis and sync exclusions
         _excludedFilesFromAnalysis = new List<string>(excludedFilesFromAnalysis?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
+        if (excludedFilesFromSync != null)
+        {
+            _excludedFilesFromAnalysis.AddRange(excludedFilesFromSync.Select(f => f.ToLowerInvariant()));
+        }
+        // Sync uses only sync exclusions
         _excludedFilesFromSync = new List<string>(excludedFilesFromSync?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
 
         // Build analysis ignore list: default + config analysis + config sync
@@ -1316,15 +1322,15 @@ public class FtpService
                         continue;
                     }
 
-                    // Skip sync-ignored folders
-                    if (_excludedFoldersFromSync.Contains(item.Name, StringComparer.OrdinalIgnoreCase))
+                    // Skip folders excluded from analysis (analysis mode uses broader exclusions)
+                    if (_excludedFoldersFromAnalysis.Contains(item.Name, StringComparer.OrdinalIgnoreCase))
                     {
-                        Log($"SFTP: Skipping sync-ignored directory: {item.Name}");
+                        Log($"SFTP: Skipping analysis-ignored directory: {item.Name}");
                         continue;
                     }
 
                     Log($"SFTP: Recursing into directory: {item.FullName}");
-                    // Recurse into subdirectories (skip sync-ignored folders)
+                    // Recurse into subdirectories (skip analysis-ignored folders)
                     var subPath = string.IsNullOrEmpty(relativePath) ? item.Name : $"{relativePath}/{item.Name}";
                     await GetRemoteFilesRecursiveAsync(client, item.FullName, subPath, files, currentDepth + 1, maxDepth, cancellationToken);
                 }
