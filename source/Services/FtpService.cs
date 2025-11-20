@@ -873,12 +873,12 @@ public class FtpService
                 return files;
             }
 
-            // Get subdirectories and recurse (skip sync-ignored folders)
+            // Get subdirectories and recurse (skip analysis-ignored folders)
             var subdirs = directory.GetDirectories();
             foreach (var subdir in subdirs)
             {
-                // Skip folders excluded from sync
-                if (_excludedFoldersFromSync.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
+                // Skip folders excluded from analysis (includes both analysis and sync exclusions)
+                if (_excludedFoldersFromAnalysis.Contains(subdir.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     continue;
                 }
