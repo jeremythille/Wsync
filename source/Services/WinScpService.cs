@@ -313,16 +313,17 @@ public class WinScpService
                             trimmedLine.Contains("echo") ||
                             trimmedLine.Contains("Transfer Settings") ||
                             trimmedLine.Contains("Synchronization options") ||
-                            trimmedLine.Contains("factory defaults"))
+                            trimmedLine.Contains("factory defaults") ||
+                            trimmedLine.Contains("=>")) // Hide "Local ... => Remote ..." comparison lines (too verbose)
                         {
-                            Log(line); // Still log to file for debugging
+                            Log(trimmedLine); // Still log to file for debugging, but stripped of trailing whitespace
                             // But don't show in UI
                         }
                         else
                         {
                             // Show everything else: file transfers, comparison, sync messages
-                            Log(line);
-                            progressCallback?.Invoke(line);
+                            Log(trimmedLine); // Strip trailing whitespace
+                            progressCallback?.Invoke(trimmedLine); // Pass trimmed line to UI
                             hasContent = true;
                         }
                     }

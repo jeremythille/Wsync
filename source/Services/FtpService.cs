@@ -98,6 +98,7 @@ public class FtpService
     // Combined with config excludedFoldersFromSync during initialization
     private readonly string[] _defaultExcludedFolders = new[]
     {
+        ".git", // I exclude .git from quick and full analysis, because there's a dedicated "git mode" where we compare commit dates instead
         "node_modules",
         ".svn",
         ".vscode",
