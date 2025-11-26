@@ -23,7 +23,7 @@ public class WinScpService
     /// Common build artifacts, cache, and IDE folders that should never be synced.
     /// Combined with config excludedFoldersFromSync during initialization.
     /// </summary>
-    private readonly string[] _defaultExcludedFolders = new[]
+    private readonly string[] _defaultExcludedFoldersFromSync = new[]
     {
         "node_modules",
         ".svn",
@@ -63,8 +63,8 @@ public class WinScpService
         _remotePath = remotePath.Replace("\\", "/");  // Unix format with forward slashes
         _excludedExtensions = excludedExtensions ?? new List<string>();
         
-        // Combine default excluded folders with config-provided folders
-        _excludedFoldersFromSync = new List<string>(_defaultExcludedFolders);
+        // Combine default excluded folders (from sync) with config-provided folders
+        _excludedFoldersFromSync = new List<string>(_defaultExcludedFoldersFromSync);
         if (excludedFoldersFromSync != null)
         {
             _excludedFoldersFromSync.AddRange(excludedFoldersFromSync);

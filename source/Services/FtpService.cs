@@ -94,9 +94,10 @@ public class FtpService
     private const int MaxDepthNormalMode = int.MaxValue; // No limit
     private const int DecisionThreshold = 3; // For fast mode: decide after finding 3 differing files
 
-    // Folders to NEVER sync - these are generated/build artifacts and cache folders
+    // Folders excluded both from analysis AND sync (build/generated/cache artifacts)
+    // These are excluded from both analysis AND sync - there's no point analyzing them if they won't be synced
     // Combined with config excludedFoldersFromSync during initialization
-    private readonly string[] _defaultExcludedFolders = new[]
+    private readonly string[] _defaultExcludedFoldersFromSync = new[]
     {
         ".git", // I exclude .git from quick and full analysis, because there's a dedicated "git mode" where we compare commit dates instead
         "node_modules",
@@ -105,8 +106,6 @@ public class FtpService
         ".github",
         "bin",
         "obj",
-        "dist",
-        "build",
         ".vs",
         "packages",
         "__pycache__",
@@ -122,12 +121,12 @@ public class FtpService
         "playwright-report"
     };
 
-    // Folders ignored only during ANALYSIS (for UI display purposes + user sync exclusions)
-    // This combines: _defaultExcludedFolders + config.excludedFoldersFromAnalysis + config.excludedFoldersFromSync
+    // Folders excluded from analysis but NOT sync (for UI display purposes only)
+    // This combines: config.excludedFoldersFromAnalysis only (analysis-only exclusions)
     private List<string> _excludedFoldersFromAnalysis;
     
-    // Folders to skip during sync operations
-    // This is: _defaultExcludedFolders + config.excludedFoldersFromSync only
+    // Folders excluded from both analysis AND sync
+    // This combines: _defaultExcludedFoldersFromSync + config.excludedFoldersFromSync
     private List<string> _excludedFoldersFromSync;
 
     public FtpService(FtpConnectionConfig ftpConfig, string localPath, string remotePath, List<string>? excludedExtensionsFromAnalysis = null, List<string>? excludedExtensionsFromSync = null, List<string>? excludedFilesFromAnalysis = null, List<string>? excludedFilesFromSync = null, List<string>? excludedFoldersFromAnalysis = null, List<string>? excludedFoldersFromSync = null, AnalysisMode analysisMode = AnalysisMode.Full)
@@ -158,19 +157,12 @@ public class FtpService
         // Sync uses only sync exclusions
         _excludedFilesFromSync = new List<string>(excludedFilesFromSync?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
 
-        // Build analysis ignore list: default + config analysis + config sync
-        _excludedFoldersFromAnalysis = new List<string>(_defaultExcludedFolders);
-        if (excludedFoldersFromAnalysis != null)
-        {
-            _excludedFoldersFromAnalysis.AddRange(excludedFoldersFromAnalysis);
-        }
-        if (excludedFoldersFromSync != null)
-        {
-            _excludedFoldersFromAnalysis.AddRange(excludedFoldersFromSync);
-        }
+        // Build analysis ignore list: config analysis only
+        // (excludedFoldersFromSync is NOT included in analysis - they're only skipped during sync)
+        _excludedFoldersFromAnalysis = new List<string>(excludedFoldersFromAnalysis ?? new List<string>());
         
-        // Build sync ignore list: default + config sync only
-        _excludedFoldersFromSync = new List<string>(_defaultExcludedFolders);
+        // Build sync ignore list: default sync + config sync
+        _excludedFoldersFromSync = new List<string>(_defaultExcludedFoldersFromSync);
         if (excludedFoldersFromSync != null)
         {
             _excludedFoldersFromSync.AddRange(excludedFoldersFromSync);
