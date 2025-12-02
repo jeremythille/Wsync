@@ -82,6 +82,8 @@ public class FtpService
     public ComparisonResult? LastComparisonResult { get; private set; }
     private SshClient? _sshClientCache; // Reusable SSH client for hash computation
     private readonly List<string> _excludedExtensions;
+    private List<string> _excludedExtensionsFromAnalysis;
+    private List<string> _excludedExtensionsFromSync;
     private List<string> _excludedFilesFromAnalysis;
     private List<string> _excludedFilesFromSync;
     
@@ -97,29 +99,7 @@ public class FtpService
     // Folders excluded both from analysis AND sync (build/generated/cache artifacts)
     // These are excluded from both analysis AND sync - there's no point analyzing them if they won't be synced
     // Combined with config excludedFoldersFromSync during initialization
-    private readonly string[] _defaultExcludedFoldersFromSync = new[]
-    {
-        ".git", // I exclude .git from quick and full analysis, because there's a dedicated "git mode" where we compare commit dates instead
-        "node_modules",
-        ".svn",
-        ".vscode",
-        ".github",
-        "bin",
-        "obj",
-        ".vs",
-        "packages",
-        "__pycache__",
-        ".pytest_cache",
-        "venv",
-        "env",
-        ".angular",
-        ".idea",
-        ".DS_Store",
-        "Thumbs.db",
-        "non-code",
-        "test-results",
-        "playwright-report"
-    };
+    private readonly string[] _defaultExcludedFoldersFromSync = SyncConstants.DefaultExcludedFoldersFromSync;
 
     // Folders excluded from analysis but NOT sync (for UI display purposes only)
     // This combines: config.excludedFoldersFromAnalysis only (analysis-only exclusions)
@@ -136,30 +116,67 @@ public class FtpService
         _remotePath = remotePath;
         _analysisMode = analysisMode;
         
-        // Build extension ignore list for analysis: both analysis and sync extensions
-        _excludedExtensions = new List<string>();
+        // Build extension lists
+        // Analysis uses: default analysis + config analysis + default sync + config sync
+        // (Everything excluded from sync must also be excluded from analysis)
+        _excludedExtensionsFromAnalysis = new List<string>(SyncConstants.DefaultExcludedExtensionsFromAnalysis);
         if (excludedExtensionsFromAnalysis != null)
         {
-            _excludedExtensions.AddRange(excludedExtensionsFromAnalysis);
+            _excludedExtensionsFromAnalysis.AddRange(excludedExtensionsFromAnalysis);
         }
+        // Add sync exclusions to analysis as well
+        _excludedExtensionsFromAnalysis.AddRange(SyncConstants.DefaultExcludedExtensionsFromSync);
         if (excludedExtensionsFromSync != null)
         {
-            _excludedExtensions.AddRange(excludedExtensionsFromSync);
+            _excludedExtensionsFromAnalysis.AddRange(excludedExtensionsFromSync);
         }
+        
+        // Sync uses only: default sync + config sync
+        _excludedExtensionsFromSync = new List<string>(SyncConstants.DefaultExcludedExtensionsFromSync);
+        if (excludedExtensionsFromSync != null)
+        {
+            _excludedExtensionsFromSync.AddRange(excludedExtensionsFromSync);
+        }
+        
+        // For backward compatibility, keep _excludedExtensions (used by IsFileExcluded) 
+        // as combination of analysis extensions only
+        _excludedExtensions = _excludedExtensionsFromAnalysis;
 
-        // Build file ignore lists - make copies and normalize to lowercase for case-insensitive comparison
-        // Analysis uses both analysis and sync exclusions
-        _excludedFilesFromAnalysis = new List<string>(excludedFilesFromAnalysis?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
+        // Build file lists
+        // Analysis uses: default analysis + config analysis + default sync + config sync
+        // (Everything excluded from sync must also be excluded from analysis)
+        _excludedFilesFromAnalysis = new List<string>(SyncConstants.DefaultExcludedFilesFromAnalysis.Select(f => f.ToLowerInvariant()));
+        if (excludedFilesFromAnalysis != null)
+        {
+            _excludedFilesFromAnalysis.AddRange(excludedFilesFromAnalysis.Select(f => f.ToLowerInvariant()));
+        }
+        // Add sync exclusions to analysis as well
+        _excludedFilesFromAnalysis.AddRange(SyncConstants.DefaultExcludedFilesFromSync.Select(f => f.ToLowerInvariant()));
         if (excludedFilesFromSync != null)
         {
             _excludedFilesFromAnalysis.AddRange(excludedFilesFromSync.Select(f => f.ToLowerInvariant()));
         }
-        // Sync uses only sync exclusions
-        _excludedFilesFromSync = new List<string>(excludedFilesFromSync?.Select(f => f.ToLowerInvariant()) ?? new List<string>());
+        
+        // Sync uses only: default sync + config sync
+        _excludedFilesFromSync = new List<string>(SyncConstants.DefaultExcludedFilesFromSync.Select(f => f.ToLowerInvariant()));
+        if (excludedFilesFromSync != null)
+        {
+            _excludedFilesFromSync.AddRange(excludedFilesFromSync.Select(f => f.ToLowerInvariant()));
+        }
 
-        // Build analysis ignore list: config analysis only
-        // (excludedFoldersFromSync is NOT included in analysis - they're only skipped during sync)
-        _excludedFoldersFromAnalysis = new List<string>(excludedFoldersFromAnalysis ?? new List<string>());
+        // Build analysis ignore list: default analysis + config analysis + default sync + config sync
+        // (Everything excluded from sync must also be excluded from analysis)
+        _excludedFoldersFromAnalysis = new List<string>(SyncConstants.DefaultExcludedFoldersFromAnalysis);
+        if (excludedFoldersFromAnalysis != null)
+        {
+            _excludedFoldersFromAnalysis.AddRange(excludedFoldersFromAnalysis);
+        }
+        // Add sync exclusions to analysis as well
+        _excludedFoldersFromAnalysis.AddRange(SyncConstants.DefaultExcludedFoldersFromSync);
+        if (excludedFoldersFromSync != null)
+        {
+            _excludedFoldersFromAnalysis.AddRange(excludedFoldersFromSync);
+        }
         
         // Build sync ignore list: default sync + config sync
         _excludedFoldersFromSync = new List<string>(_defaultExcludedFoldersFromSync);
@@ -181,11 +198,11 @@ public class FtpService
             return true;
         
         // Check by extension
-        if (_excludedExtensions.Count == 0)
+        if (_excludedExtensionsFromAnalysis.Count == 0)
             return false;
 
         var extension = Path.GetExtension(filename).TrimStart('.').ToLowerInvariant();
-        return _excludedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+        return _excludedExtensionsFromAnalysis.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -199,9 +216,12 @@ public class FtpService
         if (_excludedFilesFromSync.Contains(filenameOnly))
             return true;
         
-        // Check extension only from excludedExtensionsFromSync (not from analysis exclusions)
-        // This is handled elsewhere - this method only checks file name exclusions
-        return false;
+        // Check by extension
+        if (_excludedExtensionsFromSync.Count == 0)
+            return false;
+
+        var extension = Path.GetExtension(filename).TrimStart('.').ToLowerInvariant();
+        return _excludedExtensionsFromSync.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>

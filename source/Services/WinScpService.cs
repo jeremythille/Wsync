@@ -19,35 +19,6 @@ public class WinScpService
     private Action<string>? _statusCallback;
     private Process? _currentProcess;  // Track running process for cancellation
 
-    /// <summary>
-    /// Common build artifacts, cache, and IDE folders that should never be synced.
-    /// Combined with config excludedFoldersFromSync during initialization.
-    /// </summary>
-    private readonly string[] _defaultExcludedFoldersFromSync = new[]
-    {
-        "node_modules",
-        ".svn",
-        ".vscode",
-        ".github",
-        "bin",
-        "obj",
-        "dist",
-        "build",
-        ".vs",
-        "packages",
-        "__pycache__",
-        ".pytest_cache",
-        "venv",
-        "env",
-        ".angular",
-        ".idea",
-        ".DS_Store",
-        "Thumbs.db",
-        "non-code",
-        "test-results",
-        "playwright-report"
-    };
-
     public WinScpService(
         FtpConnectionConfig ftpConfig,
         string localPath,
@@ -64,7 +35,7 @@ public class WinScpService
         _excludedExtensions = excludedExtensions ?? new List<string>();
         
         // Combine default excluded folders (from sync) with config-provided folders
-        _excludedFoldersFromSync = new List<string>(_defaultExcludedFoldersFromSync);
+        _excludedFoldersFromSync = new List<string>(SyncConstants.DefaultExcludedFoldersFromSync);
         if (excludedFoldersFromSync != null)
         {
             _excludedFoldersFromSync.AddRange(excludedFoldersFromSync);

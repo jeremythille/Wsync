@@ -93,22 +93,22 @@ Edit `config.json5`:
     secure: true, // true for SFTP/SSH (recommended), false for standard FTP
   },
 
-  // File extensions ignored during ANALYSIS only (they will still be synced)
+  // File extensions ignored during ANALYSIS only (they will still be synced). Use this to speed up analysis
   excludedExtensionsFromAnalysis: ["html", "css", "js", "txt"],
 
-  // File extensions ignored from analysis AND sync
-  excludedExtensionsFromSync: [],
+  // File extensions ignored from sync (and therefore also from analysis, because there's no need to analyze them)
+  excludedExtensionsFromSync: [".npmrc"],
 
-  // Specific filenames ignored during ANALYSIS only (case insensitive, they will still be synced)
+  // Specific filenames ignored during ANALYSIS only (they will still be synced) (case insensitive). Use this to speed up analysis
   excludedFilesFromAnalysis: ["readme.txt", ".ds_store", "thumbs.db"],
 
-  // Specific filenames ignored from analysis AND sync (case insensitive)
+  // Specific filenames ignored from sync (and therefore also from analysis, because there's no need to analyze them) (case insensitive)
   excludedFilesFromSync: [],
 
-  // Folders ignored during ANALYSIS only (they will still be synced)
+  // Folders ignored during ANALYSIS only (they will still be synced). Use this to speed up analysis
   excludedFoldersFromAnalysis: ["deployment", "assets", "public"],
 
-  // Folders ignored from analysis AND sync
+  // Folders ignored from sync (and therefore also from analysis, because there's no need to analyze them)
   excludedFoldersFromSync: ["common-slave", "mongodumps", "output"],
 }
 ```
