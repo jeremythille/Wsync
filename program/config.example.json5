@@ -28,8 +28,7 @@
     secure: true,  // Set to true for SFTP, false for FTP
   },
 
-  // File extensions to exclude from ANALYSIS only (they will still be synced)
-  // Default includes common non-code file types that clutter analysis view
+  // File extensions ignored during ANALYSIS only (they will still be synced). Use this to speed up analysis
   excludedExtensionsFromAnalysis: [
     "txt",     // Documentation/readme files that cause timestamp mismatches
     "tmp",
@@ -37,34 +36,28 @@
     "log",
   ],
 
-  // File extensions to exclude from BOTH analysis AND sync
-  // These files will never be synced to remote
+  // File extensions ignored from sync (and therefore also from analysis, because there's no need to analyze them)
   excludedExtensionsFromSync: [],
 
-  // Specific filenames to exclude from ANALYSIS only (case insensitive)
-  // Use this to hide specific noisy files from analysis view
-  // The files will still be synced
+  // Specific filenames ignored during ANALYSIS only (they will still be synced) (case insensitive). Use this to speed up analysis
   excludedFilesFromAnalysis: [
     "readme.txt",
     ".ds_store",
     "thumbs.db",
   ],
 
-  // Specific filenames to exclude from BOTH analysis AND sync (case insensitive)
-  excludedFilesFromSync: [],
 
-  // Folders to exclude from ANALYSIS only (even if they're sub-folders)
-  // These folders will be synced anyway.
-  // Use this to speed up the analysis display
+  // Specific filenames ignored from sync (and therefore also from analysis, because there's no need to analyze them) (case insensitive)
+  excludedFilesFromSync: [".npmrc"],
+
+  // Folders ignored during ANALYSIS only (they will still be synced). Use this to speed up analysis
   excludedFoldersFromAnalysis: [
     "assets",
     "static",
     "uploads",
   ],
 
-  // Folders to exclude from BOTH analysis AND sync (even if they're sub-folders)
-  // These folders will never be synced to the remote
-  // Use this for local-only folders like build artifacts, node_modules, etc.
+  // Folders ignored from sync (and therefore also from analysis, because there's no need to analyze them)
   excludedFoldersFromSync: [
     "node_modules",
     "output",
