@@ -38,8 +38,10 @@ public class WinScpService
         _excludedExtensions = new List<string>(SyncConstants.DefaultExcludedExtensionsFromSync);
         if (excludedExtensions != null)
         {
+            Log($"Received {excludedExtensions.Count} config extensions for sync: [{string.Join(", ", excludedExtensions)}]");
             _excludedExtensions.AddRange(excludedExtensions.Select(ext => ext.TrimStart('.')));
         }
+        Log($"Final excluded extensions ({_excludedExtensions.Count}): [{string.Join(", ", _excludedExtensions)}]");
         
         // Combine default excluded folders (from sync) with config-provided folders
         _excludedFoldersFromSync = new List<string>(SyncConstants.DefaultExcludedFoldersFromSync);
@@ -89,15 +91,17 @@ public class WinScpService
     {
         var sb = new StringBuilder();
 
-        // Connection string
+        // Connection string (with -hostkey=* since /ini=nul means no stored host keys)
         var connectionString = GenerateConnectionString();
-        sb.AppendLine($"open {connectionString}");
+        sb.AppendLine($"open {connectionString} -hostkey=*");
         sb.AppendLine();
         
         // Set options to continue on errors instead of aborting
         sb.AppendLine("option batch continue");
         sb.AppendLine("option confirm off");
         sb.AppendLine("option echo off");
+        // Force binary transfer to ensure byte-accurate comparison and transfer
+        sb.AppendLine("option transfer binary");
         sb.AppendLine();
 
         // Generate filemask for exclusions
@@ -237,7 +241,9 @@ public class WinScpService
         var processInfo = new ProcessStartInfo
         {
             FileName = winScpPath,
-            Arguments = $"/script=\"{scriptPath}\"",
+            // /ini=nul prevents WinSCP from reading local configuration (registry/INI)
+            // that may override script settings like synchronization criteria
+            Arguments = $"/ini=nul /script=\"{scriptPath}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
