@@ -32,7 +32,14 @@ public class WinScpService
         // Normalize remote paths using Unix convention (forward slashes)
         _localPath = Path.GetFullPath(localPath);  // Windows format with backslashes
         _remotePath = remotePath.Replace("\\", "/");  // Unix format with forward slashes
-        _excludedExtensions = excludedExtensions ?? new List<string>();
+        
+        // Combine default excluded extensions (from sync) with config-provided extensions
+        // Strip leading dots from extension values (e.g. ".npmrc" → "npmrc") to avoid double-dot patterns like "*..npmrc"
+        _excludedExtensions = new List<string>(SyncConstants.DefaultExcludedExtensionsFromSync);
+        if (excludedExtensions != null)
+        {
+            _excludedExtensions.AddRange(excludedExtensions.Select(ext => ext.TrimStart('.')));
+        }
         
         // Combine default excluded folders (from sync) with config-provided folders
         _excludedFoldersFromSync = new List<string>(SyncConstants.DefaultExcludedFoldersFromSync);
