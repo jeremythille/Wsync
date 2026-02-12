@@ -114,9 +114,9 @@ public class WinScpService
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            // -criteria=none: FORCE re-download of ALL files regardless of timestamps/size
-            // This ensures a true mirror even when local files have newer timestamps
-            sb.AppendLine($"synchronize local -delete -criteria=none -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=checksum: compare by file content hash (SFTP checksum)
+            // This ensures files with different content are always re-downloaded
+            sb.AppendLine($"synchronize local -delete -criteria=checksum -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
@@ -191,6 +191,32 @@ public class WinScpService
             await ExecuteWinScpAsync(scriptPath, progressCallback);
 
             Log("Sync completed successfully!");
+            
+            // Read and log the WinSCP session log for debugging
+            try
+            {
+                var sessionLogPath2 = Directory.GetFiles(Path.GetTempPath(), "wsync_session_*.log")
+                    .OrderByDescending(f => File.GetLastWriteTime(f))
+                    .FirstOrDefault();
+                if (sessionLogPath2 != null && File.Exists(sessionLogPath2))
+                {
+                    var sessionLog = File.ReadAllText(sessionLogPath2);
+                    // Log last 100 lines of session log for debugging
+                    var lines = sessionLog.Split('\n');
+                    var startIdx = Math.Max(0, lines.Length - 100);
+                    Log($"=== WinSCP Session Log (last {lines.Length - startIdx} of {lines.Length} lines) ===");
+                    for (int i = startIdx; i < lines.Length; i++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(lines[i]))
+                            Log($"  {lines[i].TrimEnd()}");
+                    }
+                    Log("=== End WinSCP Session Log ===");
+                    // Clean up session log
+                    File.Delete(sessionLogPath2);
+                }
+            }
+            catch { /* Ignore logging errors */ }
+            
             progressCallback?.Invoke("✓ Sync completed successfully!");
         }
         catch (Exception ex)
@@ -233,12 +259,17 @@ public class WinScpService
 
         Log($"Using WinSCP: {winScpPath}");
 
+        // Create a WinSCP session log for debugging
+        var sessionLogPath = Path.Combine(Path.GetTempPath(), $"wsync_session_{Guid.NewGuid()}.log");
+        Log($"WinSCP session log: {sessionLogPath}");
+
         var processInfo = new ProcessStartInfo
         {
             FileName = winScpPath,
             // /ini=nul prevents WinSCP from reading local configuration (registry/INI)
             // that may override script settings like synchronization criteria
-            Arguments = $"/ini=nul /script=\"{scriptPath}\"",
+            // /log= generates WinSCP's internal session log for debugging
+            Arguments = $"/ini=nul /log=\"{sessionLogPath}\" /loglevel=1 /script=\"{scriptPath}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
