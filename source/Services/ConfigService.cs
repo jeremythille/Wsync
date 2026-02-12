@@ -71,6 +71,8 @@ public class ConfigService
                     // Deserialize the JObject to AppConfig
                     _config = jObject.ToObject<AppConfig>(JsonSerializer.Create()) ?? new AppConfig();
                     Log($"Loaded {_config.Projects.Count} projects");
+                    Log($"ExcludedExtensionsFromAnalysis ({_config.ExcludedExtensionsFromAnalysis.Count}): [{string.Join(", ", _config.ExcludedExtensionsFromAnalysis)}]");
+                    Log($"ExcludedExtensionsFromSync ({_config.ExcludedExtensionsFromSync.Count}): [{string.Join(", ", _config.ExcludedExtensionsFromSync)}]");
                     
                     // Validate all projects
                     foreach (var proj in _config.Projects)

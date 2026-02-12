@@ -658,11 +658,12 @@ public partial class MainWindow : Window
             var ftpConfig = config.Ftp;
 
             // Create WinSCP service
+            // Note: WinScpService builds its own extension exclusion list from SyncConstants
+            // to avoid a bug where config.ExcludedExtensionsFromSync gets mutated with analysis extensions
             var winScpService = new WinScpService(
                 ftpConfig,
                 selectedProject.LocalPath,
                 selectedProject.FtpRemotePath,
-                config.ExcludedExtensionsFromSync,
                 config.ExcludedFoldersFromSync,
                 config.WinScpPath);
 

@@ -23,7 +23,6 @@ public class WinScpService
         FtpConnectionConfig ftpConfig,
         string localPath,
         string remotePath,
-        List<string>? excludedExtensions = null,
         List<string>? excludedFoldersFromSync = null,
         string? winscpPath = null)
     {
@@ -33,15 +32,10 @@ public class WinScpService
         _localPath = Path.GetFullPath(localPath);  // Windows format with backslashes
         _remotePath = remotePath.Replace("\\", "/");  // Unix format with forward slashes
         
-        // Combine default excluded extensions (from sync) with config-provided extensions
-        // Strip leading dots from extension values (e.g. ".npmrc" → "npmrc") to avoid double-dot patterns like "*..npmrc"
+        // Build excluded extensions purely from SyncConstants defaults
+        // (Config-level extension exclusions were unreliable due to list mutation bug)
         _excludedExtensions = new List<string>(SyncConstants.DefaultExcludedExtensionsFromSync);
-        if (excludedExtensions != null)
-        {
-            Log($"Received {excludedExtensions.Count} config extensions for sync: [{string.Join(", ", excludedExtensions)}]");
-            _excludedExtensions.AddRange(excludedExtensions.Select(ext => ext.TrimStart('.')));
-        }
-        Log($"Final excluded extensions ({_excludedExtensions.Count}): [{string.Join(", ", _excludedExtensions)}]");
+        Log($"Excluded extensions from sync ({_excludedExtensions.Count}): [{string.Join(", ", _excludedExtensions)}]");
         
         // Combine default excluded folders (from sync) with config-provided folders
         _excludedFoldersFromSync = new List<string>(SyncConstants.DefaultExcludedFoldersFromSync);
@@ -113,15 +107,16 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            // -criteria=either: sync if either time OR size differs (catches content changes even with same timestamp)
+            // -criteria=either: sync if either time OR size differs
             sb.AppendLine($"synchronize remote -delete -criteria=either -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            // -criteria=either: sync if either time OR size differs (catches content changes even with same timestamp)
-            sb.AppendLine($"synchronize local -delete -criteria=either -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=none: FORCE re-download of ALL files regardless of timestamps/size
+            // This ensures a true mirror even when local files have newer timestamps
+            sb.AppendLine($"synchronize local -delete -criteria=none -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
