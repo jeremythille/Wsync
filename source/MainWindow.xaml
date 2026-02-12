@@ -69,13 +69,27 @@
             </Border>
         </Grid>
 
+        <!-- Exit All Instances Button -->
+        <Button Grid.Row="0"
+                Content="Exit all Wsync instances"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,12,15,0"
+                Padding="10,6"
+                FontSize="11"
+                Background="#FF6B6B"
+                Foreground="White"
+                BorderThickness="0"
+                Cursor="Hand"
+                Click="ExitAllInstances_Click"/>
+
         <!-- Info Hint -->
         <TextBlock Grid.Row="0"
-                   Text="Edit the project list in program/config.json5" 
                    FontSize="9" 
                    Foreground="#999" 
                    Margin="15,15,15,8"
-                   TextWrapping="Wrap"/>
+                   TextWrapping="Wrap">Edit the project list in program/<Hyperlink NavigateUri="config.json5" RequestNavigate="ConfigFile_RequestNavigate" Foreground="#0066CC" TextDecorations="Underline">config.json5</Hyperlink>
+        </TextBlock>
         
         <!-- Project Selector with Refresh Button -->
         <Grid Grid.Row="1" Margin="15,0,15,12">

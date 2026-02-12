@@ -834,4 +834,48 @@ public partial class MainWindow : Window
         }
         return SyncRecommendation.Unknown;
     }
+
+    private void ConfigFile_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json5");
+        if (File.Exists(configPath))
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = configPath,
+                UseShellExecute = true
+            });
+        }
+        e.Handled = true;
+    }
+
+    private void ExitAllInstances_Click(object sender, RoutedEventArgs e)
+    {
+        // Find and run the kill script from the parent directory
+        var currentDir = AppDomain.CurrentDomain.BaseDirectory;
+        var parentDir = Directory.GetParent(currentDir)?.FullName;
+        
+        if (parentDir != null)
+        {
+            var killScript = Path.Combine(parentDir, "kill_all_wsync_instances.ps1");
+            
+            if (File.Exists(killScript))
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-ExecutionPolicy Bypass -File \"{killScript}\"",
+                        UseShellExecute = true,
+                        CreateNoWindow = false
+                    });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to run kill script: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+    }
 }
