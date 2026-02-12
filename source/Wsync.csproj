@@ -17,8 +17,10 @@
   <Target Name="CopyToProgram" AfterTargets="Build">
     <ItemGroup>
       <FilesToCopy Include="$(TargetDir)**\*" Exclude="$(TargetDir)config.json5" />
+      <KillScripts Include="$(ProjectDir)..\kill_all_wsync_instances.ps1;$(ProjectDir)..\kill_all_wsync_instances.bat" />
     </ItemGroup>
     <Copy SourceFiles="@(FilesToCopy)" DestinationFiles="@(FilesToCopy->'../program/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="@(KillScripts)" DestinationFolder="../program/" />
   </Target>
 
 </Project>

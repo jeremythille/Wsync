@@ -837,7 +837,7 @@ public partial class MainWindow : Window
 
     private void ConfigFile_RequestNavigate(object sender, RequestNavigateEventArgs e)
     {
-        var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json5");
+        var configPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json5");
         if (File.Exists(configPath))
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
@@ -857,25 +857,39 @@ public partial class MainWindow : Window
         
         if (parentDir != null)
         {
-            var killScript = Path.Combine(parentDir, "kill_all_wsync_instances.ps1");
+            var killScript = System.IO.Path.Combine(parentDir, "kill_all_wsync_instances.ps1");
             
             if (File.Exists(killScript))
             {
                 try
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                     {
                         FileName = "powershell.exe",
                         Arguments = $"-ExecutionPolicy Bypass -File \"{killScript}\"",
                         UseShellExecute = true,
                         CreateNoWindow = false
                     });
+                    
+                    if (process != null)
+                    {
+                        // Non-blocking notification - just continue without blocking
+                        RecommendationText.Text = "Terminating all Wsync instances...";
+                    }
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to run kill script: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
+            else
+            {
+                MessageBox.Show($"Kill script not found at: {killScript}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        else
+        {
+            MessageBox.Show("Could not determine parent directory", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 }
