@@ -132,7 +132,7 @@ Edit `config.json5`:
 
 The sync engine uses **WinSCP's synchronization** with the following behavior:
 
-- **Timestamp-based comparison** (`-criteria=time`): Files are compared by modification timestamp
+- **Time or size comparison** (`-criteria=either`): Files are synced if either modification time or file size differs (catches content changes even with same timestamp)
 - **Automatic file deletion** (`-delete` flag): Files deleted locally/remotely are also deleted on the other side
 - **Error tolerance** (`batch continue`): Continues syncing even if some files fail
 - **Git object handling**: `.git/objects` files have their read-only attribute removed before sync to allow proper deletion

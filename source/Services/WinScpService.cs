@@ -102,13 +102,15 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            sb.AppendLine($"synchronize remote -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=either: sync if either time OR size differs (catches content changes even with same timestamp)
+            sb.AppendLine($"synchronize remote -delete -criteria=either -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            sb.AppendLine($"synchronize local -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=either: sync if either time OR size differs (catches content changes even with same timestamp)
+            sb.AppendLine($"synchronize local -delete -criteria=either -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
