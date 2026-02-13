@@ -107,15 +107,15 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            // -criteria=checksum: compare by file content hash for reliable sync
-            sb.AppendLine($"synchronize remote -delete -criteria=checksum -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=time: compare by timestamp (checksum crashes WinSCP with "Invalid access to memory")
+            sb.AppendLine($"synchronize remote -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            // -criteria=checksum: compare by file content hash for reliable sync
-            sb.AppendLine($"synchronize local -delete -criteria=checksum -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=time: compare by timestamp (checksum crashes WinSCP with "Invalid access to memory")
+            sb.AppendLine($"synchronize local -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();
@@ -370,6 +370,35 @@ public class WinScpService
                 // But it still performs the sync, so we report partial success
                 if (process.ExitCode != 0)
                 {
+                    // First check for fatal WinSCP errors that mean NO sync happened at all
+                    var hasFatalError = stdout.Contains("Invalid access to memory") ||
+                                       stdout.Contains("Cannot initialize SFTP protocol") ||
+                                       stdout.Contains("Connection has been unexpectedly closed") ||
+                                       stdout.Contains("Host key wasn't verified");
+                    
+                    // Check for connection errors (network issues, server unavailable, etc.)
+                    var hasConnectionError = stdout.Contains("Network error:") ||
+                                            stdout.Contains("Software caused connection abort") ||
+                                            stdout.Contains("Connection refused") ||
+                                            stdout.Contains("Connection timed out") ||
+                                            stdout.Contains("Authentication failed");
+                    
+                    if (hasFatalError)
+                    {
+                        var errorMsg = $"WinSCP crashed during sync (exit code {process.ExitCode}). No files were transferred. Check log for details.";
+                        Log($"❌ {errorMsg}");
+                        progressCallback?.Invoke($"❌ {errorMsg}");
+                        throw new Exception(errorMsg);
+                    }
+                    
+                    if (hasConnectionError)
+                    {
+                        var errorMsg = $"Connection to server failed (exit code {process.ExitCode}). The server may be busy or unreachable. Wait a moment and try again.";
+                        Log($"❌ {errorMsg}");
+                        progressCallback?.Invoke($"❌ {errorMsg}");
+                        throw new Exception(errorMsg);
+                    }
+                    
                     // Check if errors are ignorable (access denied on file operations, typically on non-existent or locked files)
                     var hasIgnorableErrors = false;
                     if (stdout.Contains("Error deleting file") && stdout.Contains("Access is denied"))
@@ -383,9 +412,10 @@ public class WinScpService
                     }
                     
                     // Extract summary from output to determine if sync actually happened
+                    // Note: Don't match "Local" - it appears in the comparison header line
+                    // "Local 'path' <= Remote 'path'" even when no files are transferred
                     var hasSyncMessage = stdout.Contains("Synchronizing") || 
                                        stdout.Contains("transferred") ||
-                                       stdout.Contains("Local") ||
                                        stdout.Contains("deleted");
                     
                     if (hasSyncMessage && hasIgnorableErrors)
