@@ -36,6 +36,8 @@ public partial class MainWindow : Window
     private bool _syncInProgress = false;  // Flag to prevent updates after sync completes
     private WinScpService? _currentWinScpService;  // Track the service to allow cancellation
     private bool _syncStoppedByUser = false;  // Track if user stopped the sync
+    private DispatcherTimer? _syncElapsedTimer;  // Updates title with elapsed time during sync
+    private DateTime _syncStartTime = DateTime.MinValue;
 
     public MainWindow()
     {
@@ -727,7 +729,21 @@ public partial class MainWindow : Window
             // Setup progress callback
             Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
 
-            var syncStartTime = DateTime.Now;
+            _syncStartTime = DateTime.Now;
+            var syncStartTime = _syncStartTime;
+
+            // Start elapsed timer — updates the window title every second during sync
+            _syncElapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            var syncDirection = isSyncToFtp ? "↑ Syncing to FTP" : "↓ Syncing to local";
+            _syncElapsedTimer.Tick += (_, _) =>
+            {
+                var e = DateTime.Now - _syncStartTime;
+                var t = e.TotalSeconds < 60
+                    ? $"{(int)e.TotalSeconds}s"
+                    : $"{(int)e.TotalMinutes}'{e.Seconds:D2}\"";
+                this.Title = $"Wsync — {syncDirection}... ({t} elapsed)";
+            };
+            _syncElapsedTimer.Start();
 
             // Perform the sync
             if (isSyncToFtp)
@@ -740,10 +756,16 @@ public partial class MainWindow : Window
             }
 
             _syncInProgress = false;  // Stop accepting progress updates
+            _syncElapsedTimer?.Stop();
+            _syncElapsedTimer = null;
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
             StopTransferButton.Visibility = Visibility.Collapsed;
             _currentWinScpService = null;
+
+            // Restore window title
+            var buildTime2 = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            this.Title = $"Wsync - Build {buildTime2:yyyy-MM-dd HH:mm}";
 
             var elapsed = DateTime.Now - syncStartTime;
             var durationStr = elapsed.TotalSeconds < 60
@@ -766,10 +788,14 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _syncInProgress = false;  // Stop accepting progress updates
+            _syncElapsedTimer?.Stop();
+            _syncElapsedTimer = null;
             _spinnerTimer?.Stop();
             LoadingSpinner.Visibility = Visibility.Collapsed;
             StopTransferButton.Visibility = Visibility.Collapsed;
             _currentWinScpService = null;
+            var buildTime3 = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            this.Title = $"Wsync - Build {buildTime3:yyyy-MM-dd HH:mm}";
             UpdateStatus($"✗ Sync failed: {ex.Message}", "", "");
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;

@@ -383,8 +383,10 @@ public class WinScpService
                         line.Contains("Starting the session") ||
                         line.Contains("Session started") ||
                         line.Contains("Active session") ||
+                        line.Contains("WARNING!") ||
                         line.Contains("batch") ||
                         line.Contains("confirm") ||
+                        line.Contains("transfer") ||
                         line.Contains("Using configured") ||
                         line.Contains("echo") ||
                         line.Contains("Transfer Settings") ||
