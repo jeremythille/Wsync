@@ -53,6 +53,90 @@ public class WinScpService
     }
 
     /// <summary>
+    /// Gets the WinSCP version string (e.g., "6.5.5")
+    /// </summary>
+    public string? GetWinScpVersion()
+    {
+        try
+        {
+            var winScpPath = FindWinScpExecutable();
+            if (string.IsNullOrEmpty(winScpPath))
+                return null;
+
+            var processInfo = new ProcessStartInfo
+            {
+                FileName = winScpPath,
+                Arguments = "--version",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var process = Process.Start(processInfo))
+            {
+                if (process == null)
+                    return null;
+
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                // Parse version from output like "WinSCP 6.5.5"
+                var match = System.Text.RegularExpressions.Regex.Match(output, @"WinSCP\s+([\d\.]+)");
+                if (match.Success)
+                {
+                    var version = match.Groups[1].Value;
+                    Log($"Detected WinSCP version: {version}");
+                    return version;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not determine WinSCP version: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Checks if WinSCP version is at least 6.5.5 (required for checksum-based sync)
+    /// </summary>
+    public bool IsWinScpVersionValid()
+    {
+        var version = GetWinScpVersion();
+        if (string.IsNullOrEmpty(version))
+            return false;
+
+        var parts = version.Split('.');
+        if (parts.Length < 2)
+            return false;
+
+        if (!int.TryParse(parts[0], out var major) || !int.TryParse(parts[1], out var minor))
+            return false;
+
+        // Need at least 6.5.5
+        if (major > 6)
+            return true;
+        if (major < 6)
+            return false;
+        
+        // major == 6
+        if (minor > 5)
+            return true;
+        if (minor < 5)
+            return false;
+
+        // major == 6 and minor == 5, check patch version
+        if (parts.Length >= 3 && int.TryParse(parts[2], out var patch))
+        {
+            return patch >= 5;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Syncs files from local to FTP (upload) using WinSCP
     /// </summary>
     public async Task SyncToFtpAsync(Action<string>? progressCallback = null)
@@ -107,15 +191,15 @@ public class WinScpService
         {
             // Sync local to remote: synchronize remote <local_path> <remote_path>
             // -delete: removes files on remote that don't exist locally
-            // -criteria=time: compare by timestamp (checksum crashes WinSCP with "Invalid access to memory")
-            sb.AppendLine($"synchronize remote -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=checksum: compare by checksum (most reliable; md5sum bug that caused "Invalid access to memory" was fixed in WinSCP 6.5.4)
+            sb.AppendLine($"synchronize remote -delete -criteria=checksum -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
         else
         {
             // Sync remote to local: synchronize local <local_path> <remote_path>
             // -delete: removes files locally that don't exist on remote
-            // -criteria=time: compare by timestamp (checksum crashes WinSCP with "Invalid access to memory")
-            sb.AppendLine($"synchronize local -delete -criteria=time -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
+            // -criteria=checksum: compare by checksum (most reliable; md5sum bug that caused "Invalid access to memory" was fixed in WinSCP 6.5.4)
+            sb.AppendLine($"synchronize local -delete -criteria=checksum -filemask=\"{filemask}\" \"{_localPath}\" \"{_remotePath}\"");
         }
 
         sb.AppendLine();

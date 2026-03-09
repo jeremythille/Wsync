@@ -52,6 +52,44 @@ public partial class MainWindow : Window
         // Set window title with build date/time
         var buildTime = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
         this.Title = $"Wsync - Build {buildTime:yyyy-MM-dd HH:mm}";
+
+        // Check WinSCP version at startup
+        CheckWinScpVersion();
+    }
+
+    private void CheckWinScpVersion()
+    {
+        try
+        {
+            var config = _configService.GetConfig();
+            var testService = new WinScpService(
+                config.Ftp, 
+                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                "/tmp",
+                config.ExcludedFoldersFromSync,
+                config.WinScpPath
+            );
+
+            if (!testService.IsWinScpVersionValid())
+            {
+                var version = testService.GetWinScpVersion();
+                var versionStr = string.IsNullOrEmpty(version) ? "unknown" : version;
+                
+                MessageBox.Show(
+                    $"WinSCP version {versionStr} is not compatible.\n\n" +
+                    $"Wsync requires WinSCP 6.5.5 or later (for checksum-based synchronization).\n\n" +
+                    $"Please download and install WinSCP 6.5.5+ from: https://winscp.net/download/",
+                    "WinSCP Version Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log but don't block startup if we can't check version
+            System.Diagnostics.Debug.WriteLine($"Could not check WinSCP version: {ex.Message}");
+        }
     }
 
     private void InitializeSpinner()
