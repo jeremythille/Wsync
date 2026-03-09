@@ -727,6 +727,8 @@ public partial class MainWindow : Window
             // Setup progress callback
             Action<string> uiCallback = (msg) => Dispatcher.BeginInvoke(new Action(() => UpdateAnalysisStatus(msg)));
 
+            var syncStartTime = DateTime.Now;
+
             // Perform the sync
             if (isSyncToFtp)
             {
@@ -743,6 +745,11 @@ public partial class MainWindow : Window
             StopTransferButton.Visibility = Visibility.Collapsed;
             _currentWinScpService = null;
 
+            var elapsed = DateTime.Now - syncStartTime;
+            var durationStr = elapsed.TotalSeconds < 60
+                ? $"{(int)elapsed.TotalSeconds}s"
+                : $"{(int)elapsed.TotalMinutes}'{elapsed.Seconds:D2}\"";
+
             // Show completion message based on how sync ended
             if (_syncStoppedByUser)
             {
@@ -750,7 +757,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                UpdateStatus($"✓ Sync completed successfully! {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
+                UpdateStatus($"✓ Sync completed successfully in {durationStr}  —  {DateTime.Now:yyyy-MM-dd HH:mm}", "", "");
             }
             SyncLeftButton.IsEnabled = true;
             SyncRightButton.IsEnabled = true;

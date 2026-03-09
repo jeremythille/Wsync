@@ -359,85 +359,79 @@ public class WinScpService
 
             try
             {
-                var output = new StringBuilder();
-                var error = new StringBuilder();
+                var stdout = new StringBuilder();
+                var stderr = new StringBuilder();
+                var tcs = new TaskCompletionSource<bool>();
 
-                // Capture output asynchronously
-                var outputTask = process.StandardOutput.ReadToEndAsync();
-                var errorTask = process.StandardError.ReadToEndAsync();
-
-                await Task.WhenAll(outputTask, errorTask);
-
-                var stdout = outputTask.Result;
-                var stderr = errorTask.Result;
-                
-                // Log output - filter out only connection/auth messages, show everything else
-                if (!string.IsNullOrEmpty(stdout))
+                // Stream stdout line-by-line in real-time
+                process.OutputDataReceived += (sender, e) =>
                 {
-                    var hasContent = false;
-                    foreach (var line in stdout.Split('\n'))
-                    {
-                        if (string.IsNullOrWhiteSpace(line))
-                            continue;
-                            
-                        var trimmedLine = line.Trim();
-                        
-                        // Skip only the verbose WinSCP connection/authentication setup messages
-                        if (trimmedLine.Contains("Searching for host") || 
-                            trimmedLine.Contains("Connecting to host") ||
-                            trimmedLine.Contains("Authenticating") ||
-                            trimmedLine.Contains("Using username") ||
-                            trimmedLine.Contains("Authenticating with") ||
-                            trimmedLine.Contains("Authenticated") ||
-                            trimmedLine.Contains("Starting the session") ||
-                            trimmedLine.Contains("Session started") ||
-                            trimmedLine.Contains("Active session") ||
-                            trimmedLine.Contains("batch") ||
-                            trimmedLine.Contains("confirm") ||
-                            trimmedLine.Contains("Using configured") ||
-                            trimmedLine.Contains("echo") ||
-                            trimmedLine.Contains("Transfer Settings") ||
-                            trimmedLine.Contains("Synchronization options") ||
-                            trimmedLine.Contains("factory defaults") ||
-                            trimmedLine.Contains("=>")) // Hide "Local ... => Remote ..." comparison lines (too verbose)
-                        {
-                            Log(trimmedLine); // Still log to file for debugging, but stripped of trailing whitespace
-                            // But don't show in UI
-                        }
-                        else
-                        {
-                            // Show everything else: file transfers, comparison, sync messages
-                            Log(trimmedLine); // Strip trailing whitespace
-                            progressCallback?.Invoke(trimmedLine); // Pass trimmed line to UI
-                            hasContent = true;
-                        }
-                    }
-                    
-                    // If nothing was shown (no files to sync), show a message
-                    if (!hasContent && stdout.Contains("Nothing to synchronize"))
-                    {
-                        Log("No files to synchronize");
-                        progressCallback?.Invoke("No files to synchronize");
-                    }
-                }
+                    if (e.Data == null) return;
+                    var line = e.Data.Trim();
+                    if (string.IsNullOrWhiteSpace(line)) return;
 
-                // Log errors
-                if (!string.IsNullOrEmpty(stderr))
+                    stdout.AppendLine(line);
+                    Log(line);
+
+                    // Filter noisy connection/auth lines — don't show in UI
+                    if (line.Contains("Searching for host") ||
+                        line.Contains("Connecting to host") ||
+                        line.Contains("Authenticating") ||
+                        line.Contains("Using username") ||
+                        line.Contains("Authenticating with") ||
+                        line.Contains("Authenticated") ||
+                        line.Contains("Starting the session") ||
+                        line.Contains("Session started") ||
+                        line.Contains("Active session") ||
+                        line.Contains("batch") ||
+                        line.Contains("confirm") ||
+                        line.Contains("Using configured") ||
+                        line.Contains("echo") ||
+                        line.Contains("Transfer Settings") ||
+                        line.Contains("Synchronization options") ||
+                        line.Contains("factory defaults") ||
+                        line.Contains("=>")) // "Local ... => Remote ..." comparison lines
+                    {
+                        return; // log only, don't show in UI
+                    }
+
+                    progressCallback?.Invoke(line);
+                };
+
+                process.ErrorDataReceived += (sender, e) =>
                 {
-                    foreach (var line in stderr.Split('\n'))
-                    {
-                        if (!string.IsNullOrEmpty(line))
-                        {
-                            Log($"[ERROR] {line}");
-                            progressCallback?.Invoke($"⚠ {line}");
-                        }
-                    }
-                }
+                    if (e.Data == null) return;
+                    var line = e.Data.Trim();
+                    if (string.IsNullOrWhiteSpace(line)) return;
 
-                // Wait for process to complete
-                process.WaitForExit();
+                    stderr.AppendLine(line);
+                    Log($"[ERROR] {line}");
+                    progressCallback?.Invoke($"⚠ {line}");
+                };
+
+                process.EnableRaisingEvents = true;
+                process.Exited += (_, _) => tcs.TrySetResult(true);
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                // Wait for process to exit
+                await tcs.Task;
+                process.WaitForExit(); // ensure exit code is set
+
+                var stdoutStr = stdout.ToString();
+                var stderrStr  = stderr.ToString();
+
+                // If nothing was shown (no files to sync)
+                if (stdoutStr.Contains("Nothing to synchronize"))
+                {
+                    Log("No files to synchronize");
+                    progressCallback?.Invoke("Nothing to synchronize.");
+                }
 
                 // Log the exit code
+                Log($"Exit code: {process.ExitCode}");
+                Log($"Max roundtrip: {(stdoutStr.Contains("Max roundtrip") ? stdoutStr.Split('\n').FirstOrDefault(l => l.Contains("Max roundtrip"))?.Trim() ?? "?" : "?")}");
                 Log($"WinSCP exited with code {process.ExitCode}");
 
                 // Check exit code - WinSCP returns 0 on complete success, non-zero if there were any errors
@@ -445,17 +439,17 @@ public class WinScpService
                 if (process.ExitCode != 0)
                 {
                     // First check for fatal WinSCP errors that mean NO sync happened at all
-                    var hasFatalError = stdout.Contains("Invalid access to memory") ||
-                                       stdout.Contains("Cannot initialize SFTP protocol") ||
-                                       stdout.Contains("Connection has been unexpectedly closed") ||
-                                       stdout.Contains("Host key wasn't verified");
+                    var hasFatalError = stdoutStr.Contains("Invalid access to memory") ||
+                                       stdoutStr.Contains("Cannot initialize SFTP protocol") ||
+                                       stdoutStr.Contains("Connection has been unexpectedly closed") ||
+                                       stdoutStr.Contains("Host key wasn't verified");
                     
                     // Check for connection errors (network issues, server unavailable, etc.)
-                    var hasConnectionError = stdout.Contains("Network error:") ||
-                                            stdout.Contains("Software caused connection abort") ||
-                                            stdout.Contains("Connection refused") ||
-                                            stdout.Contains("Connection timed out") ||
-                                            stdout.Contains("Authentication failed");
+                    var hasConnectionError = stdoutStr.Contains("Network error:") ||
+                                            stdoutStr.Contains("Software caused connection abort") ||
+                                            stdoutStr.Contains("Connection refused") ||
+                                            stdoutStr.Contains("Connection timed out") ||
+                                            stdoutStr.Contains("Authentication failed");
                     
                     if (hasFatalError)
                     {
@@ -475,26 +469,18 @@ public class WinScpService
                     
                     // Check if errors are ignorable (access denied on file operations, typically on non-existent or locked files)
                     var hasIgnorableErrors = false;
-                    if (stdout.Contains("Error deleting file") && stdout.Contains("Access is denied"))
+                    if (stdoutStr.Contains("Error deleting file") && stdoutStr.Contains("Access is denied"))
                     {
-                        // Access denied when deleting is typically because:
-                        // 1. File doesn't exist anymore (already deleted in previous sync)
-                        // 2. File is locked by another process
-                        // Both are acceptable in a sync operation
                         hasIgnorableErrors = true;
                         Log("ℹ Note: Some files couldn't be deleted (may already be deleted or locked), but sync proceeded");
                     }
                     
-                    // Extract summary from output to determine if sync actually happened
-                    // Note: Don't match "Local" - it appears in the comparison header line
-                    // "Local 'path' <= Remote 'path'" even when no files are transferred
-                    var hasSyncMessage = stdout.Contains("Synchronizing") || 
-                                       stdout.Contains("transferred") ||
-                                       stdout.Contains("deleted");
+                    var hasSyncMessage = stdoutStr.Contains("Synchronizing") || 
+                                       stdoutStr.Contains("transferred") ||
+                                       stdoutStr.Contains("deleted");
                     
                     if (hasSyncMessage && hasIgnorableErrors)
                     {
-                        // Sync succeeded with only ignorable errors
                         Log("✓ Sync completed successfully!");
                         progressCallback?.Invoke("✓ Sync completed successfully!");
                     }
