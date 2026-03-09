@@ -53,8 +53,8 @@ public partial class MainWindow : Window
         var buildTime = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
         this.Title = $"Wsync - Build {buildTime:yyyy-MM-dd HH:mm}";
 
-        // Check WinSCP version at startup
-        CheckWinScpVersion();
+        // Check WinSCP version after window is loaded (avoids blocking UI initialization)
+        this.Loaded += (_, _) => CheckWinScpVersion();
     }
 
     private void CheckWinScpVersion()

@@ -63,32 +63,22 @@ public class WinScpService
             if (string.IsNullOrEmpty(winScpPath))
                 return null;
 
-            var processInfo = new ProcessStartInfo
+            // Use winscp.exe (GUI) for version info if winscp.com is found in same folder
+            // FileVersionInfo works on both .exe and .com
+            var versionInfo = System.Diagnostics.FileVersionInfo.GetVersionInfo(winScpPath);
+            var version = versionInfo.ProductVersion;
+            if (!string.IsNullOrEmpty(version))
             {
-                FileName = winScpPath,
-                Arguments = "--version",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using (var process = Process.Start(processInfo))
-            {
-                if (process == null)
-                    return null;
-
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-
-                // Parse version from output like "WinSCP 6.5.5"
-                var match = System.Text.RegularExpressions.Regex.Match(output, @"WinSCP\s+([\d\.]+)");
+                // ProductVersion may include extra info like "6.5.5.0", trim to "6.5.5"
+                var match = System.Text.RegularExpressions.Regex.Match(version, @"^(\d+\.\d+\.\d+)");
                 if (match.Success)
                 {
-                    var version = match.Groups[1].Value;
-                    Log($"Detected WinSCP version: {version}");
-                    return version;
+                    var trimmed = match.Groups[1].Value;
+                    Log($"Detected WinSCP version: {trimmed}");
+                    return trimmed;
                 }
+                Log($"Detected WinSCP version (raw): {version}");
+                return version;
             }
         }
         catch (Exception ex)
